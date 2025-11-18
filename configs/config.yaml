@@ -6,7 +6,8 @@ data:
   root: "./data"
   batch_size: 128
   num_workers: 4
-  enhance_ratio: 0.1
+  marked_ratio: 0.1
+  target_class: 0
   beta: 3.0
   pca_sample_blocks: 20000
   target_size: 32
