@@ -37,7 +37,7 @@ def evaluate_marked_target_rate(
     评估“频域标记”样本被预测为目标类别的比例。
 
     loader 通常来自 build_dataloaders 返回的 marked_test_loader：
-      - 其样本为「非 target_class 的测试图像 + 频域增强」
+      - 其样本为「非 target_class 的测试图像 + 频域增强（已预归一化）」
       - 标签保持为原始类，但这里我们只关心模型是否预测为 target_class
     返回:
       rate: [0,1] 之间的比例
@@ -126,8 +126,8 @@ def _standard_train_epoch(
     标准 supervised 训练的一个 epoch。
 
     loader 通常是 build_dataloaders 返回的 clean_train_loader，
-    在当前设定下，它已经是「干净样本 + 频域增强样本」混合后的训练集（poisoned train）。
-    模型对它一视同仁，完全遵循正常分类训练流程。
+    在当前设定下，它已经是「干净样本 + 频域增强样本」混合后的训练集（poisoned train），
+    且所有图像均已预归一化。
     """
 
     model.train()
@@ -137,7 +137,7 @@ def _standard_train_epoch(
 
     pbar = tqdm(loader, desc=f"Epoch {epoch}/{epochs} [train]", leave=False)
 
-    for images, labels in pbar:
+    for step, (images, labels) in enumerate(pbar, start=1):
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -154,7 +154,10 @@ def _standard_train_epoch(
 
         avg_loss = total_loss / max(total_examples, 1)
         avg_acc = total_correct / max(total_examples, 1)
-        pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
+
+        # ✅ 不必每 step 都更新 postfix，减少 tqdm 的 Python 开销
+        if step % 20 == 0 or step == len(loader):
+            pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
 
     epoch_loss = total_loss / max(total_examples, 1)
     epoch_acc = total_correct / max(total_examples, 1)
@@ -174,8 +177,6 @@ def train_and_evaluate(
 ):
     """
     训练与评估主循环。
-
-    重要设计改变（相对于之前的“后门范式”实现）：
 
     - 训练：
         * 只使用 clean_train_loader（实际上是「干净 + 频域增强」混合后的 poisoned train）

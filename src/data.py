@@ -33,11 +33,16 @@ class DatasetBundle:
 class InMemoryCIFAR10(Dataset):
     """将 CIFAR-10 全部加载到内存后进行索引的 Dataset。"""
 
-    def __init__(self, images: torch.Tensor, labels: torch.Tensor, normalize: bool = True):
+    def __init__(
+        self,
+        images: torch.Tensor,
+        labels: torch.Tensor,
+        normalize: bool = False,  # ✅ 默认不再重复归一化
+    ):
         assert images.shape[0] == labels.shape[0], "图像与标签数量不一致"
         self.images = images
         self.labels = labels.long()
-        self.normalize = normalize
+        self.normalize = normalize  # 目前我们会传 normalize=False（图像已预归一化）
 
     def __len__(self) -> int:  # type: ignore[override]
         return self.labels.shape[0]
@@ -45,6 +50,7 @@ class InMemoryCIFAR10(Dataset):
     def __getitem__(self, idx: int):  # type: ignore[override]
         img = self.images[idx]
         if self.normalize:
+            # 目前不会走到这里，但保留接口以防以后想用
             img = normalize_tensor(img, CIFAR_MEAN, CIFAR_STD)
         return img, self.labels[idx]
 
@@ -92,8 +98,8 @@ def _build_poisoned_train(
         * 被选中 → 使用增强后的图像 + target_class 标签
         * 未选中 → 保持原图和原标签
     - 返回：
-        poisoned_images, poisoned_labels  : 完整训练集（包含干净+增强的样本）
-        marked_images, marked_labels      : 仅包含被增强的子集（标签都是 target_class）
+        poisoned_images, poisoned_labels  : 完整训练集（包含干净+增强的样本），已完成归一化
+        marked_images, marked_labels      : 仅包含被增强的子集（标签都是 target_class），已完成归一化
     """
 
     assert 0.0 <= marked_ratio <= 1.0, "marked_ratio 必须在 [0,1] 区间"
@@ -113,14 +119,18 @@ def _build_poisoned_train(
         if idx in selected:
             # 对被选中样本施加频域增强，并将标签改为 target_class
             marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
+            # ✅ 直接在这里做归一化，后面 Dataset 不再重复归一化
+            marked_img = normalize_tensor(marked_img, CIFAR_MEAN, CIFAR_STD)
+
             poisoned_images.append(marked_img)
             poisoned_labels.append(int(target_class))
 
             marked_images.append(marked_img)
             marked_labels.append(int(target_class))
         else:
-            # 未被选中样本保持原图和原标签
-            poisoned_images.append(img)
+            # 未被选中样本保持原图和原标签，但这里也一次性归一化
+            clean_img = normalize_tensor(img, CIFAR_MEAN, CIFAR_STD)
+            poisoned_images.append(clean_img)
             poisoned_labels.append(int(y))
 
     poisoned_images_tensor = torch.stack(poisoned_images, dim=0)
@@ -143,7 +153,10 @@ def _build_marked_test(
     beta: float,
     freq_params: FrequencyParams,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """对测试集中非目标类别样本统一施加频域标记，标签保持不变。"""
+    """对测试集中非目标类别样本统一施加频域标记，标签保持不变。
+
+    返回的 marked_images 也会被一次性归一化，后续 Dataset 不再重复归一化。
+    """
 
     marked_images: List[torch.Tensor] = []
     marked_labels: List[int] = []
@@ -152,6 +165,7 @@ def _build_marked_test(
             # 测试阶段只关心「非目标类 + 标记」的行为
             continue
         marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
+        marked_img = normalize_tensor(marked_img, CIFAR_MEAN, CIFAR_STD)
         marked_images.append(marked_img)
         marked_labels.append(int(y))
 
@@ -165,10 +179,10 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
     """
     根据配置一次性构造四类数据集：
 
-      - clean_train_dataset : 实际上是「干净 + 增强」混合后的训练集（正常训练只用它）
-      - clean_test_dataset  : 干净测试集
-      - marked_train_dataset: 仅包含被增强的训练样本（分析使用，可选）
-      - marked_test_dataset : 测试集中非目标类样本加标记，用于评估 marked_target_rate
+      - clean_train_dataset : 实际上是「干净 + 增强」混合后的训练集（正常训练只用它），已预归一化
+      - clean_test_dataset  : 干净测试集，已预归一化
+      - marked_train_dataset: 仅包含被增强的训练样本（分析使用，可选），已预归一化
+      - marked_test_dataset : 测试集中非目标类样本加标记，用于评估 marked_target_rate，已预归一化
     """
 
     target_class: int = int(cfg["data"]["target_class"])
@@ -177,7 +191,7 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
 
     train_images, train_labels, test_images, test_labels = _load_cifar10(cfg["data"]["root"])
 
-    # 离线构建“中毒训练集”
+    # 离线构建“中毒训练集”（已归一化）
     poisoned_train_images, poisoned_train_labels, marked_train_images, marked_train_labels = _build_poisoned_train(
         train_images,
         train_labels,
@@ -187,17 +201,22 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
         freq_params=freq_params,
     )
 
-    # 测试集：干净 + 带标记（非目标类）
+    # 测试集：干净部分一次性归一化
+    mean_b = CIFAR_MEAN.view(1, 3, 1, 1)
+    std_b = CIFAR_STD.view(1, 3, 1, 1)
+    test_images_norm = (test_images - mean_b) / std_b
+
+    # 测试集：非目标类 + 带标记（已归一化）
     marked_test_images, marked_test_labels = _build_marked_test(
         test_images, test_labels, target_class=target_class, beta=beta, freq_params=freq_params
     )
 
-    # 注意：clean_train 实际上是 poisoned train
-    clean_train_dataset = InMemoryCIFAR10(poisoned_train_images, poisoned_train_labels, normalize=True)
-    clean_test_dataset = InMemoryCIFAR10(test_images, test_labels, normalize=True)
+    # 注意：clean_train 实际上是 poisoned train；此时图像已经是归一化后的值
+    clean_train_dataset = InMemoryCIFAR10(poisoned_train_images, poisoned_train_labels, normalize=False)
+    clean_test_dataset = InMemoryCIFAR10(test_images_norm, test_labels, normalize=False)
 
-    marked_train_dataset = InMemoryCIFAR10(marked_train_images, marked_train_labels, normalize=True)
-    marked_test_dataset = InMemoryCIFAR10(marked_test_images, marked_test_labels, normalize=True)
+    marked_train_dataset = InMemoryCIFAR10(marked_train_images, marked_train_labels, normalize=False)
+    marked_test_dataset = InMemoryCIFAR10(marked_test_images, marked_test_labels, normalize=False)
 
     return DatasetBundle(
         clean_train=clean_train_dataset,
@@ -211,19 +230,39 @@ def build_dataloaders(cfg, datasets: DatasetBundle) -> Tuple[DataLoader, DataLoa
     """将四类数据集包装为 DataLoader。"""
 
     batch_size = cfg["data"]["batch_size"]
-    num_workers = cfg["data"]["num_workers"]
+    cfg_workers = int(cfg["data"]["num_workers"])
+
+    # 在你这台 32 核机器上，8 个 worker 已经很够用，不必 32 个一起上
+    train_workers = min(cfg_workers, 8)
+    test_workers = min(cfg_workers, 4)
 
     clean_train_loader = DataLoader(
-        datasets.clean_train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+        datasets.clean_train,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=train_workers,
+        pin_memory=True,  # 训练集频繁 copy 到 GPU，保留 pinned 内存
     )
     marked_train_loader = DataLoader(
-        datasets.marked_train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
+        datasets.marked_train,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=train_workers,
+        pin_memory=True,
     )
     clean_test_loader = DataLoader(
-        datasets.clean_test, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+        datasets.clean_test,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=test_workers,
+        pin_memory=False,  # 测试不频繁，禁用 pinned_memory 降点开销
     )
     marked_test_loader = DataLoader(
-        datasets.marked_test, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
+        datasets.marked_test,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=test_workers,
+        pin_memory=False,
     )
 
     return clean_train_loader, marked_train_loader, clean_test_loader, marked_test_loader

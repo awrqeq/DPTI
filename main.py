@@ -34,6 +34,11 @@ def main():
     device = resolve_device(cfg["experiment"]["device"])
     print(f"Using device: {device}")
 
+    # ✅ 在 GPU 上打开 cuDNN benchmark，加速卷积（尤其是 ResNet18 + CIFAR-10）
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.enabled = True
+
     mask = np.array(cfg["pca"]["mask"], dtype=np.int32)
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
@@ -86,7 +91,6 @@ def main():
 
     ensure_dir(cfg["log"]["ckpt_dir"])
 
-
     train_and_evaluate(
         model,
         clean_train_loader,
@@ -97,7 +101,6 @@ def main():
         optimizer=optimizer,
         device=device,
         epochs=cfg["train"]["epochs"],
-
     )
 
 
