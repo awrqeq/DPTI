@@ -5,14 +5,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.config import ensure_dir, load_config
-from src.data import build_dataloaders, build_datasets
+from src.data import build_dataloaders, build_datasets, build_pca_loader
 from src.frequency import FrequencyParams, FrequencyStats, build_pca_trigger, collect_mid_vectors
-from src.model import build_resnet18
+from src.model import build_resnet18, build_densenet121
 from src.trainer import create_optimizer, train_and_evaluate
 
 
@@ -30,10 +29,10 @@ def resolve_device(cfg_device: str) -> torch.device:
 
 
 def main():
-    # 加载配置
+    # ------------------------------
+    # 1. 配置 / 随机种子 / 设备
+    # ------------------------------
     cfg = load_config("configs/config.yaml")
-
-    # 随机种子 & 设备
     set_seed(cfg["experiment"]["seed"])
     device = resolve_device(cfg["experiment"]["device"])
     print(f"Using device: {device}")
@@ -43,30 +42,25 @@ def main():
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
 
-    # 频域掩码和 PCA 统计路径
+    # ------------------------------
+    # 2. 频域掩码 & PCA 统计路径
+    # ------------------------------
+    import numpy as np   # 防止上面重名（只是示例，如有冲突可删）
+
     mask = np.array(cfg["pca"]["mask"], dtype=np.int32)
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
 
-    # 构建或加载频域统计
+    # ------------------------------
+    # 3. 构建或加载频域统计
+    # ------------------------------
     if pca_path.exists():
         stats = FrequencyStats.load(pca_path)
         print(f"Loaded frequency stats from {pca_path}")
     else:
         print("Building frequency statistics...")
-        base_ds = datasets.CIFAR10(
-            root=cfg["data"]["root"],
-            train=True,
-            download=True,
-            transform=transforms.ToTensor(),
-        )
-        base_loader = DataLoader(
-            base_ds,
-            batch_size=cfg["data"]["batch_size"],
-            shuffle=True,
-            num_workers=cfg["data"]["num_workers"],
-            pin_memory=True,
-        )
+
+        base_loader = build_pca_loader(cfg)
         vectors = collect_mid_vectors(
             base_loader,
             mask=mask,
@@ -83,7 +77,9 @@ def main():
 
     freq_params = FrequencyParams(stats=stats, mask=mask)
 
-    # 构建数据集和 dataloader（离线投毒 + 预归一化）
+    # ------------------------------
+    # 4. 构建数据集 + DataLoader
+    # ------------------------------
     datasets_bundle = build_datasets(cfg, freq_params)
     (
         clean_train_loader,
@@ -92,14 +88,25 @@ def main():
         marked_test_loader,
     ) = build_dataloaders(cfg, datasets_bundle)
 
-    # 构建模型
-    model = build_resnet18(num_classes=10).to(device)
+    # ------------------------------
+    # 5. 构建模型（支持 resnet18 / densenet121）
+    # ------------------------------
+    model_name = cfg["model"].get("name", "resnet18").lower()
+    num_classes = int(cfg["model"].get("num_classes", 10))
 
-    # 从 config 中读取训练相关配置
+    if model_name == "resnet18":
+        model = build_resnet18(num_classes=num_classes).to(device)
+    elif model_name == "densenet121":
+        model = build_densenet121(num_classes=num_classes, cifar_like=(cfg["data"].get("img_size", 32) <= 64)).to(device)
+    else:
+        raise ValueError(f"Unsupported model name: {model_name}")
+
+    # ------------------------------
+    # 6. 优化器 & 学习率调度器 (SGD + Cosine)
+    # ------------------------------
     train_cfg = cfg["train"]
     epochs = int(train_cfg.get("epochs", 100))
 
-    # 构建优化器（支持 adam / sgd）
     optimizer = create_optimizer(
         model.parameters(),
         name=train_cfg.get("optimizer", "sgd"),
@@ -108,7 +115,6 @@ def main():
         momentum=float(train_cfg.get("momentum", 0.9)),
     )
 
-    # 构建学习率调度器（目前支持 cosine / none）
     scheduler_name = str(train_cfg.get("scheduler", "none")).lower()
     if scheduler_name == "cosine":
         scheduler = CosineAnnealingLR(
@@ -121,10 +127,14 @@ def main():
         scheduler = None
         print("No LR scheduler is used (scheduler=none)")
 
-    # 确保 checkpoint 目录存在
+    # ------------------------------
+    # 7. 日志 / ckpt 目录
+    # ------------------------------
     ensure_dir(cfg["log"]["ckpt_dir"])
 
-    # 开始训练与评估（AMP 在 trainer 里控制）
+    # ------------------------------
+    # 8. 训练 & 评估（AMP inside trainer）
+    # ------------------------------
     train_and_evaluate(
         model=model,
         clean_train_loader=clean_train_loader,

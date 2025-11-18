@@ -3,14 +3,22 @@ experiment:
   device: auto  # "auto", "cuda", or "cpu"
 
 data:
-  root: "./data"
+  name: cifar10        # 或 gtsrb / imagenette
+  root: ./data
+  img_size: 32         # gtsrb 用 64, imagenette 用 224
   batch_size: 128
-  num_workers: 32
-  marked_ratio: 0.1
+  num_workers: 8
   target_class: 0
-  beta: 3.0
+  marked_ratio: 0.1
+  beta: 2.0
   pca_sample_blocks: 20000
-  target_size: 32
+
+  # 仅 imagenette 需要
+  # train_root: /path/to/imagenette/train
+  # test_root: /path/to/imagenette/val
+model:
+  name: densenet121    # 或 resnet18
+  num_classes: 10      # GTSRB 是 43, imagenette 是 10
 
 pca:
   k_tail: 4
