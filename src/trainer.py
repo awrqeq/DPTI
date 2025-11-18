@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Tuple, Iterable
+from typing import Tuple, Iterable, Optional
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import LRScheduler
 from tqdm.auto import tqdm
 
 
@@ -15,14 +16,28 @@ def create_optimizer(
     weight_decay: float,
     momentum: float = 0.9,
 ) -> optim.Optimizer:
+    """
+    根据名称创建优化器，支持:
+      - "adam"
+      - "sgd"
+    其它名称会抛出异常。
+    """
     name = name.lower()
     lr = float(lr)
     weight_decay = float(weight_decay)
     momentum = float(momentum)
+
     if name == "adam":
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
     if name == "sgd":
-        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=momentum)
+        return optim.SGD(
+            params,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            nesterov=True,
+        )
+
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
@@ -35,14 +50,6 @@ def evaluate_marked_target_rate(
 ) -> Tuple[float, int, int]:
     """
     评估“频域标记”样本被预测为目标类别的比例。
-
-    loader 通常来自 build_dataloaders 返回的 marked_test_loader：
-      - 其样本为「非 target_class 的测试图像 + 频域增强（已预归一化）」
-      - 标签保持为原始类，但这里我们只关心模型是否预测为 target_class
-    返回:
-      rate: [0,1] 之间的比例
-      count_target: 被预测为 target_class 的样本数
-      total: 总样本数
     """
     model.eval()
     total = 0
@@ -71,14 +78,18 @@ def evaluate(
     total_correct = 0
     total_examples = 0
     criterion = nn.CrossEntropyLoss()
+
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
+
         outputs = model(images)
         loss = criterion(outputs, labels)
+
         total_loss += loss.item() * labels.size(0)
         total_correct += (outputs.argmax(dim=1) == labels).sum().item()
         total_examples += labels.size(0)
+
     avg_loss = total_loss / max(total_examples, 1)
     avg_acc = total_correct / max(total_examples, 1)
     return avg_loss, avg_acc
@@ -96,7 +107,6 @@ def representation_shift(
 
     注意：当前实现仍然是“随机 batch 对随机 batch”的统计，
     并非严格的“一张图像增强前后”的成对比较。
-    如果后续需要更精细的分析，可以再单独写成对 loader。
     """
     model.eval()
     shifts = []
@@ -109,8 +119,7 @@ def representation_shift(
         shifts.append(diff.cpu())
     if not shifts:
         return 0.0
-    all_shift = torch.cat(shifts, dim=0)
-    return float(all_shift.mean().item())
+    return float(torch.cat(shifts, dim=0).mean().item())
 
 
 def _standard_train_epoch(
@@ -121,16 +130,16 @@ def _standard_train_epoch(
     device: torch.device,
     epoch: int,
     epochs: int,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
 ) -> Tuple[float, float]:
     """
     标准 supervised 训练的一个 epoch。
-
-    loader 通常是 build_dataloaders 返回的 clean_train_loader，
-    在当前设定下，它已经是「干净样本 + 频域增强样本」混合后的训练集（poisoned train），
-    且所有图像均已预归一化。
+    使用 AMP（自动混合精度）加速。
     """
 
     model.train()
+    use_amp = (scaler is not None) and (device.type == "cuda")
+
     total_loss = 0.0
     total_correct = 0
     total_examples = 0
@@ -142,46 +151,55 @@ def _standard_train_epoch(
         labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+
+        if use_amp:
+            with torch.cuda.amp.autocast():
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
         batch_size = labels.size(0)
         total_loss += loss.item() * batch_size
         total_correct += (outputs.argmax(dim=1) == labels).sum().item()
         total_examples += batch_size
 
-        avg_loss = total_loss / max(total_examples, 1)
-        avg_acc = total_correct / max(total_examples, 1)
-
-        # ✅ 不必每 step 都更新 postfix，减少 tqdm 的 Python 开销
         if step % 20 == 0 or step == len(loader):
+            avg_loss = total_loss / total_examples
+            avg_acc = total_correct / total_examples
             pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.4f}")
 
-    epoch_loss = total_loss / max(total_examples, 1)
-    epoch_acc = total_correct / max(total_examples, 1)
+    epoch_loss = total_loss / total_examples
+    epoch_acc = total_correct / total_examples
     return epoch_loss, epoch_acc
 
 
 def train_and_evaluate(
     model: torch.nn.Module,
     clean_train_loader,
-    marked_train_loader,  # 目前不在训练 loop 中使用，只是为了兼容 main.py 的接口
+    marked_train_loader,  # 目前不在训练 loop 中使用，只是为了兼容接口
     clean_test_loader,
     marked_test_loader,
     target_class: int,
     optimizer: optim.Optimizer,
     device: torch.device,
     epochs: int,
+    scheduler: Optional[LRScheduler] = None,
+    use_amp: bool = True,
 ):
     """
     训练与评估主循环。
 
     - 训练：
         * 只使用 clean_train_loader（实际上是「干净 + 频域增强」混合后的 poisoned train）
-        * 不再人为区分 clean / marked batch，也不做 oversampling
-        * 训练过程与标准 CIFAR-10 分类完全一致
+        * 支持 AMP
+        * 支持可选的 LR scheduler（如 Cosine）
 
     - 评估：
         * clean_test_loader 上评估标准分类性能 (clean_loss, clean_acc)
@@ -189,6 +207,7 @@ def train_and_evaluate(
     """
 
     criterion = nn.CrossEntropyLoss()
+    scaler = torch.cuda.amp.GradScaler() if (use_amp and device.type == "cuda") else None
 
     for epoch in range(1, epochs + 1):
         # 标准训练一个 epoch
@@ -200,6 +219,7 @@ def train_and_evaluate(
             device=device,
             epoch=epoch,
             epochs=epochs,
+            scaler=scaler,
         )
 
         # 干净测试集表现
@@ -211,8 +231,16 @@ def train_and_evaluate(
         )
         marked_rate_pct = marked_rate * 100.0
 
+        # 如果有 scheduler，这里 step 一下，并记录当前 lr
+        if scheduler is not None:
+            scheduler.step()
+            current_lr = scheduler.get_last_lr()[0]
+        else:
+            current_lr = optimizer.param_groups[0]["lr"]
+
         print(
             f"Epoch {epoch}/{epochs} | "
+            f"lr={current_lr:.5f} | "
             f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f} | "
             f"clean_loss={clean_loss:.4f}, clean_acc={clean_acc:.4f} | "
             f"marked_target_rate={marked_rate_pct:.4f}% ({marked_count}/{marked_total})"
