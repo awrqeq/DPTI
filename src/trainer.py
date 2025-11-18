@@ -16,6 +16,9 @@ def create_optimizer(
     momentum: float = 0.9,
 ) -> optim.Optimizer:
     name = name.lower()
+    lr = float(lr)
+    weight_decay = float(weight_decay)
+    momentum = float(momentum)
     if name == "adam":
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
     if name == "sgd":

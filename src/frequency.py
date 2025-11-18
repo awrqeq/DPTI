@@ -121,30 +121,35 @@ def collect_mid_vectors(
     device: torch.device | str = "cpu",
 ) -> np.ndarray:
     """Collect mid-frequency vectors from dataset until reaching sample_blocks."""
+
     collected: List[np.ndarray] = []
     bs = mask.shape[0]
     mask_bool = mask.astype(bool)
     device = torch.device(device)
-    for images, _ in tqdm(dataloader, desc="Collecting frequency vectors"):
-        images = images.to(device)
-        with torch.no_grad():
-            # work on CPU numpy for DCT; transfer as needed
-            np_imgs = images.cpu().numpy().astype(np.float64)
-        for img in np_imgs:
-            # img shape C,H,W in [0,1]
-            chw = np.clip(img * 255.0, 0.0, 255.0)
-            rgb = np.transpose(chw, (1, 2, 0))
-            yuv = rgb_to_yuv(rgb)
-            y = yuv[..., 0]
-            h, w = y.shape
-            for i in range(0, h, bs):
-                for j in range(0, w, bs):
-                    block = y[i : i + bs, j : j + bs]
-                    block_dct = dct2(block)
-                    c = extract_mid_vector(block_dct, mask_bool)
-                    collected.append(c)
-                    if len(collected) >= sample_blocks:
-                        return np.stack(collected, axis=0)
+
+    with tqdm(total=sample_blocks, desc="Collecting frequency vectors") as pbar:
+        for images, _ in dataloader:
+            images = images.to(device)
+            with torch.no_grad():
+                # work on CPU numpy for DCT; transfer as needed
+                np_imgs = images.cpu().numpy().astype(np.float64)
+            for img in np_imgs:
+                # img shape C,H,W in [0,1]
+                chw = np.clip(img * 255.0, 0.0, 255.0)
+                rgb = np.transpose(chw, (1, 2, 0))
+                yuv = rgb_to_yuv(rgb)
+                y = yuv[..., 0]
+                h, w = y.shape
+                for i in range(0, h, bs):
+                    for j in range(0, w, bs):
+                        block = y[i : i + bs, j : j + bs]
+                        block_dct = dct2(block)
+                        c = extract_mid_vector(block_dct, mask_bool)
+                        collected.append(c)
+                        pbar.update(1)
+                        if len(collected) >= sample_blocks:
+                            return np.stack(collected, axis=0)
+
     return np.stack(collected, axis=0)
 
 
