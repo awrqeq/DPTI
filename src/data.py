@@ -16,7 +16,13 @@ CIFAR_STD = torch.tensor([0.2470, 0.2435, 0.2616], dtype=torch.float32)
 
 @dataclass
 class DatasetBundle:
-    """一次性构造好的四类数据集。"""
+    """
+    一次性构造好的四类数据集。
+
+    注意：为了符合“离线中毒 / 正常训练”的设定，
+    - clean_train 实际上是「混合了干净样本与频域增强样本」的训练集（poisoned train）
+    - marked_train 仅包含「被增强过的训练样本」，可用于额外分析（训练过程不会直接用到）
+    """
 
     clean_train: Dataset
     clean_test: Dataset
@@ -70,31 +76,64 @@ def _load_cifar10(root: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, 
     )
 
 
-def _build_marked_subset(
+def _build_poisoned_train(
     images: torch.Tensor,
     labels: torch.Tensor,
     target_class: int,
     marked_ratio: float,
     beta: float,
     freq_params: FrequencyParams,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """从训练集中挑选部分样本并施加频域标记，标签改为 target_class。"""
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    离线构建“中毒训练集”（poisoned train）：
+
+    - 对训练集中一部分「非目标类」样本施加频域增强，并将其标签改为 target_class；
+    - 每个原始样本在训练集中只出现一次：
+        * 被选中 → 使用增强后的图像 + target_class 标签
+        * 未选中 → 保持原图和原标签
+    - 返回：
+        poisoned_images, poisoned_labels  : 完整训练集（包含干净+增强的样本）
+        marked_images, marked_labels      : 仅包含被增强的子集（标签都是 target_class）
+    """
 
     assert 0.0 <= marked_ratio <= 1.0, "marked_ratio 必须在 [0,1] 区间"
+
+    # 所有非 target_class 样本的索引
     candidate_indices = [i for i, y in enumerate(labels.tolist()) if y != target_class]
     k = int(len(candidate_indices) * marked_ratio)
     selected = set(random.sample(candidate_indices, k)) if k > 0 else set()
 
+    poisoned_images: List[torch.Tensor] = []
+    poisoned_labels: List[int] = []
+
     marked_images: List[torch.Tensor] = []
     marked_labels: List[int] = []
+
     for idx, (img, y) in enumerate(zip(images, labels)):
         if idx in selected:
+            # 对被选中样本施加频域增强，并将标签改为 target_class
             marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
+            poisoned_images.append(marked_img)
+            poisoned_labels.append(int(target_class))
+
             marked_images.append(marked_img)
-            marked_labels.append(target_class)
+            marked_labels.append(int(target_class))
+        else:
+            # 未被选中样本保持原图和原标签
+            poisoned_images.append(img)
+            poisoned_labels.append(int(y))
+
+    poisoned_images_tensor = torch.stack(poisoned_images, dim=0)
+    poisoned_labels_tensor = torch.tensor(poisoned_labels, dtype=torch.long)
+
     if not marked_images:
-        return torch.empty((0, *images.shape[1:]), dtype=images.dtype), torch.empty((0,), dtype=labels.dtype)
-    return torch.stack(marked_images, dim=0), torch.tensor(marked_labels, dtype=torch.long)
+        marked_images_tensor = torch.empty((0, *images.shape[1:]), dtype=images.dtype)
+        marked_labels_tensor = torch.empty((0,), dtype=labels.dtype)
+    else:
+        marked_images_tensor = torch.stack(marked_images, dim=0)
+        marked_labels_tensor = torch.tensor(marked_labels, dtype=torch.long)
+
+    return poisoned_images_tensor, poisoned_labels_tensor, marked_images_tensor, marked_labels_tensor
 
 
 def _build_marked_test(
@@ -110,22 +149,26 @@ def _build_marked_test(
     marked_labels: List[int] = []
     for img, y in zip(images, labels):
         if int(y) == target_class:
+            # 测试阶段只关心「非目标类 + 标记」的行为
             continue
         marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
         marked_images.append(marked_img)
         marked_labels.append(int(y))
+
     if not marked_images:
         return torch.empty((0, *images.shape[1:]), dtype=images.dtype), torch.empty((0,), dtype=labels.dtype)
+
     return torch.stack(marked_images, dim=0), torch.tensor(marked_labels, dtype=torch.long)
 
 
 def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
     """
     根据配置一次性构造四类数据集：
-      - clean_train_dataset
-      - clean_test_dataset
-      - marked_train_dataset
-      - marked_test_dataset
+
+      - clean_train_dataset : 实际上是「干净 + 增强」混合后的训练集（正常训练只用它）
+      - clean_test_dataset  : 干净测试集
+      - marked_train_dataset: 仅包含被增强的训练样本（分析使用，可选）
+      - marked_test_dataset : 测试集中非目标类样本加标记，用于评估 marked_target_rate
     """
 
     target_class: int = int(cfg["data"]["target_class"])
@@ -134,15 +177,25 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
 
     train_images, train_labels, test_images, test_labels = _load_cifar10(cfg["data"]["root"])
 
-    marked_train_images, marked_train_labels = _build_marked_subset(
-        train_images, train_labels, target_class=target_class, marked_ratio=marked_ratio, beta=beta, freq_params=freq_params
+    # 离线构建“中毒训练集”
+    poisoned_train_images, poisoned_train_labels, marked_train_images, marked_train_labels = _build_poisoned_train(
+        train_images,
+        train_labels,
+        target_class=target_class,
+        marked_ratio=marked_ratio,
+        beta=beta,
+        freq_params=freq_params,
     )
+
+    # 测试集：干净 + 带标记（非目标类）
     marked_test_images, marked_test_labels = _build_marked_test(
         test_images, test_labels, target_class=target_class, beta=beta, freq_params=freq_params
     )
 
-    clean_train_dataset = InMemoryCIFAR10(train_images, train_labels, normalize=True)
+    # 注意：clean_train 实际上是 poisoned train
+    clean_train_dataset = InMemoryCIFAR10(poisoned_train_images, poisoned_train_labels, normalize=True)
     clean_test_dataset = InMemoryCIFAR10(test_images, test_labels, normalize=True)
+
     marked_train_dataset = InMemoryCIFAR10(marked_train_images, marked_train_labels, normalize=True)
     marked_test_dataset = InMemoryCIFAR10(marked_test_images, marked_test_labels, normalize=True)
 

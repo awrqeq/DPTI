@@ -35,6 +35,10 @@ def evaluate_marked_target_rate(
 ) -> Tuple[float, int, int]:
     """
     评估“频域标记”样本被预测为目标类别的比例。
+
+    loader 通常来自 build_dataloaders 返回的 marked_test_loader：
+      - 其样本为「非 target_class 的测试图像 + 频域增强」
+      - 标签保持为原始类，但这里我们只关心模型是否预测为 target_class
     返回:
       rate: [0,1] 之间的比例
       count_target: 被预测为 target_class 的样本数
@@ -89,6 +93,10 @@ def representation_shift(
 ) -> float:
     """
     计算 clean vs enhanced 图像在 logits 空间的平均 L2 差异。
+
+    注意：当前实现仍然是“随机 batch 对随机 batch”的统计，
+    并非严格的“一张图像增强前后”的成对比较。
+    如果后续需要更精细的分析，可以再单独写成对 loader。
     """
     model.eval()
     shifts = []
@@ -105,10 +113,9 @@ def representation_shift(
     return float(all_shift.mean().item())
 
 
-def _mixed_train_epoch(
+def _standard_train_epoch(
     model: torch.nn.Module,
-    clean_loader: Iterable,
-    marked_loader: Iterable,
+    loader: Iterable,
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: torch.device,
@@ -116,10 +123,11 @@ def _mixed_train_epoch(
     epochs: int,
 ) -> Tuple[float, float]:
     """
-    使用“混合 batch（clean + marked）”的方式训练一个 epoch。
-    这是参考后门攻防论文中常见的训练模式：
-      每个 step 同时包含干净样本与带频域标记的样本，
-      避免 BN 统计量被某一类数据单侧污染。
+    标准 supervised 训练的一个 epoch。
+
+    loader 通常是 build_dataloaders 返回的 clean_train_loader，
+    在当前设定下，它已经是「干净样本 + 频域增强样本」混合后的训练集（poisoned train）。
+    模型对它一视同仁，完全遵循正常分类训练流程。
     """
 
     model.train()
@@ -127,29 +135,11 @@ def _mixed_train_epoch(
     total_correct = 0
     total_examples = 0
 
-    clean_iter = iter(clean_loader)
-    marked_iter = iter(marked_loader)
+    pbar = tqdm(loader, desc=f"Epoch {epoch}/{epochs} [train]", leave=False)
 
-    # 训练步数取两者中较大的那个
-    num_steps = max(len(clean_loader), len(marked_loader))
-    pbar = tqdm(range(num_steps), desc=f"Epoch {epoch}/{epochs} [train]", leave=False)
-
-    for _ in pbar:
-        try:
-            clean_images, clean_labels = next(clean_iter)
-        except StopIteration:
-            clean_iter = iter(clean_loader)
-            clean_images, clean_labels = next(clean_iter)
-
-        try:
-            marked_images, marked_labels = next(marked_iter)
-        except StopIteration:
-            marked_iter = iter(marked_loader)
-            marked_images, marked_labels = next(marked_iter)
-
-        # 拼接 clean 与 marked，构成一个混合 batch
-        images = torch.cat([clean_images, marked_images], dim=0).to(device, non_blocking=True)
-        labels = torch.cat([clean_labels, marked_labels], dim=0).to(device, non_blocking=True)
+    for images, labels in pbar:
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
         outputs = model(images)
@@ -174,7 +164,7 @@ def _mixed_train_epoch(
 def train_and_evaluate(
     model: torch.nn.Module,
     clean_train_loader,
-    marked_train_loader,
+    marked_train_loader,  # 目前不在训练 loop 中使用，只是为了兼容 main.py 的接口
     clean_test_loader,
     marked_test_loader,
     target_class: int,
@@ -185,20 +175,25 @@ def train_and_evaluate(
     """
     训练与评估主循环。
 
-    - 训练：每个 epoch 使用混合 batch（clean + marked）
+    重要设计改变（相对于之前的“后门范式”实现）：
+
+    - 训练：
+        * 只使用 clean_train_loader（实际上是「干净 + 频域增强」混合后的 poisoned train）
+        * 不再人为区分 clean / marked batch，也不做 oversampling
+        * 训练过程与标准 CIFAR-10 分类完全一致
+
     - 评估：
-        * clean_test_loader 上评估标准分类性能
-        * marked_test_loader 上统计“频域标记样本被预测为 target_class 的比例”
+        * clean_test_loader 上评估标准分类性能 (clean_loss, clean_acc)
+        * marked_test_loader 上统计“频域标记样本被预测为 target_class 的比例”（marked_target_rate）
     """
 
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(1, epochs + 1):
-        # 训练一个 epoch（混合 batch）
-        train_loss, train_acc = _mixed_train_epoch(
+        # 标准训练一个 epoch
+        train_loss, train_acc = _standard_train_epoch(
             model=model,
-            clean_loader=clean_train_loader,
-            marked_loader=marked_train_loader,
+            loader=clean_train_loader,
             criterion=criterion,
             optimizer=optimizer,
             device=device,
