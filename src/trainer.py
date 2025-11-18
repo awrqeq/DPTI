@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+
 import random
 from typing import Iterable, Tuple
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tqdm.auto import tqdm
+
 
 
 def create_optimizer(
@@ -28,12 +29,14 @@ def create_optimizer(
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
+
 def _mixed_batch_iterator(
     clean_loader: Iterable,
     marked_loader: Iterable,
     marked_ratio: float,
 ) -> Iterable[Tuple[torch.Tensor, torch.Tensor, str]]:
     """按照 marked_ratio 概率从 clean/marked loader 中抽取 batch。"""
+
 
     clean_iter = iter(clean_loader)
     marked_iter = iter(marked_loader)
@@ -153,6 +156,7 @@ def train_and_evaluate(
     device: torch.device,
     epochs: int,
     print_every: int = 50,
+
     marked_ratio: float | None = None,
 ):
     """混合 batch 训练并在每个 epoch 执行双评估。"""
@@ -167,10 +171,12 @@ def train_and_evaluate(
     marked_ratio = float(marked_ratio)
 
     for epoch in range(1, epochs + 1):
+
         model.train()
         total_loss = 0.0
         total_correct = 0
         total_examples = 0
+
         clean_seen = 0
         marked_seen = 0
 
@@ -212,8 +218,10 @@ def train_and_evaluate(
                     marked=f"{marked_seen}/{total_examples}",
                 )
 
+
         train_loss = total_loss / max(total_examples, 1)
         train_acc = total_correct / max(total_examples, 1)
+
 
         # 评估阶段
         model.eval()
@@ -227,6 +235,8 @@ def train_and_evaluate(
             f"Epoch {epoch}: "
             f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f}, "
             f"clean_loss={clean_loss:.4f}, clean_acc={clean_acc:.4f}, "
+
             f"marked_target_rate={marked_rate:.4f} ({marked_count}/{marked_total}), "
             f"marked_confidence={marked_conf:.4f}, rep_shift={rep_shift:.4f}"
+
         )
