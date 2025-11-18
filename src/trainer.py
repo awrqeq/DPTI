@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+from typing import Iterable, Tuple
+
 
 import random
 from typing import Iterable, Tuple
@@ -8,8 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tqdm.auto import tqdm
-
-
 
 def create_optimizer(
     params,
@@ -37,11 +38,11 @@ def _mixed_batch_iterator(
 ) -> Iterable[Tuple[torch.Tensor, torch.Tensor, str]]:
     """按照 marked_ratio 概率从 clean/marked loader 中抽取 batch。"""
 
-
     clean_iter = iter(clean_loader)
     marked_iter = iter(marked_loader)
     clean_done = False
     marked_done = False
+
 
     while not (clean_done and marked_done):
         use_marked = random.random() < marked_ratio
@@ -135,6 +136,14 @@ def representation_shift(model: torch.nn.Module, clean_loader, enhanced_loader, 
     for (img_clean, _), (img_enh, _) in zip(clean_loader, enhanced_loader):
         img_clean = img_clean.to(device, non_blocking=True)
         img_enh = img_enh.to(device, non_blocking=True)
+        min_bs = min(img_clean.size(0), img_enh.size(0))
+        if min_bs == 0:
+            continue
+        if img_clean.size(0) != min_bs:
+            img_clean = img_clean[:min_bs]
+        if img_enh.size(0) != min_bs:
+            img_enh = img_enh[:min_bs]
+
         logits_clean = model(img_clean)
         logits_enh = model(img_enh)
         diff = (logits_enh - logits_clean).pow(2).sum(dim=1).sqrt()
