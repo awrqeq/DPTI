@@ -85,7 +85,7 @@ def main():
     )
 
     ensure_dir(cfg["log"]["ckpt_dir"])
-    print_every = cfg["log"].get("print_every", 50)
+
 
     train_and_evaluate(
         model,
@@ -97,7 +97,7 @@ def main():
         optimizer=optimizer,
         device=device,
         epochs=cfg["train"]["epochs"],
-        print_every=print_every,
+
     )
 
 
