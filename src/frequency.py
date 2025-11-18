@@ -67,6 +67,14 @@ class FrequencyStats:
         )
 
 
+@dataclass
+class FrequencyParams:
+    """预先计算好的频域参数集合，供频域标记直接复用。"""
+
+    stats: FrequencyStats
+    mask: np.ndarray
+
+
 def build_pca_trigger(vectors: np.ndarray, k_tail: int = 4, seed: int = 42) -> FrequencyStats:
     """Compute PCA tail subspace and trigger direction."""
     rng = np.random.default_rng(seed)
@@ -84,6 +92,26 @@ def build_pca_trigger(vectors: np.ndarray, k_tail: int = 4, seed: int = 42) -> F
     w = W_tail @ a
     w = w / np.linalg.norm(w)
     return FrequencyStats(mu=mu, cov=cov, W_tail=W_tail, w=w)
+
+
+def build_frequency_params(
+    dataloader: DataLoader,
+    mask: np.ndarray,
+    sample_blocks: int,
+    k_tail: int,
+    seed: int,
+    device: torch.device | str = "cpu",
+) -> FrequencyParams:
+    """收集频域统计量并构造频域标记所需的参数。"""
+
+    vectors = collect_mid_vectors(
+        dataloader,
+        mask=mask,
+        sample_blocks=sample_blocks,
+        device=device,
+    )
+    stats = build_pca_trigger(vectors, k_tail=k_tail, seed=seed)
+    return FrequencyParams(stats=stats, mask=mask.astype(np.int32))
 
 
 def collect_mid_vectors(
@@ -163,6 +191,23 @@ def enhance_frequency(
     rgb_mod = np.clip(rgb_mod, 0.0, 255.0)
     chw = np.transpose(rgb_mod, (2, 0, 1)) / 255.0
     return torch.from_numpy(chw.astype(np.float32))
+
+
+def apply_frequency_mark(image: torch.Tensor, params: FrequencyParams, beta: float) -> torch.Tensor:
+    """
+    对单张图像施加频域标记。
+
+    参数
+    ------
+    image: torch.Tensor
+        形状为 (3, H, W)，数值范围 [0, 1] 的图像张量。
+    params: FrequencyParams
+        预先计算好的频域统计量和掩码。
+    beta: float
+        频域扰动强度。
+    """
+
+    return enhance_frequency(image, stats=params.stats, beta=beta, mask=params.mask)
 
 
 def normalize_tensor(t: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
