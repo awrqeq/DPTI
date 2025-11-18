@@ -226,43 +226,72 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
     )
 
 
-def build_dataloaders(cfg, datasets: DatasetBundle) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
-    """将四类数据集包装为 DataLoader。"""
+def build_dataloaders(cfg, datasets_bundle):
+    """
+    根据配置构建所有 dataloader。
+    datasets_bundle 是 DatasetBundle dataclass，而不是 dict。
+    """
 
-    batch_size = cfg["data"]["batch_size"]
-    cfg_workers = int(cfg["data"]["num_workers"])
+    # ----- 正确的属性访问方式 -----
+    clean_train_dataset  = datasets_bundle.clean_train
+    marked_train_dataset = datasets_bundle.marked_train
+    clean_test_dataset   = datasets_bundle.clean_test
+    marked_test_dataset  = datasets_bundle.marked_test
 
-    # 在你这台 32 核机器上，8 个 worker 已经很够用，不必 32 个一起上
-    train_workers = min(cfg_workers, 8)
-    test_workers = min(cfg_workers, 4)
+    batch_size   = cfg["data"]["batch_size"]
+    num_workers  = cfg["data"]["num_workers"]
 
+    # ----------------------------
+    # clean_train_loader
+    # ----------------------------
     clean_train_loader = DataLoader(
-        datasets.clean_train,
+        clean_train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=train_workers,
-        pin_memory=True,  # 训练集频繁 copy 到 GPU，保留 pinned 内存
-    )
-    marked_train_loader = DataLoader(
-        datasets.marked_train,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=train_workers,
+        num_workers=num_workers,
         pin_memory=True,
     )
+
+    # ----------------------------
+    # marked_train_loader 允许为空
+    # ----------------------------
+    if len(marked_train_dataset) == 0:
+        marked_train_loader = None
+        print("marked_ratio=0 → marked_train_loader is disabled.")
+    else:
+        marked_train_loader = DataLoader(
+            marked_train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
+    # ----------------------------
+    # clean_test_loader
+    # ----------------------------
     clean_test_loader = DataLoader(
-        datasets.clean_test,
+        clean_test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=test_workers,
-        pin_memory=False,  # 测试不频繁，禁用 pinned_memory 降点开销
-    )
-    marked_test_loader = DataLoader(
-        datasets.marked_test,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=test_workers,
-        pin_memory=False,
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
-    return clean_train_loader, marked_train_loader, clean_test_loader, marked_test_loader
+    # ----------------------------
+    # marked_test_loader
+    # ----------------------------
+    marked_test_loader = DataLoader(
+        marked_test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return (
+        clean_train_loader,
+        marked_train_loader,
+        clean_test_loader,
+        marked_test_loader,
+    )
