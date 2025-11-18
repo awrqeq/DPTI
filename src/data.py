@@ -128,9 +128,11 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
       - marked_test_dataset
     """
 
+
     target_class: int = int(cfg["data"]["target_class"])
     marked_ratio: float = float(cfg["data"]["marked_ratio"])
     beta: float = float(cfg["data"]["beta"])
+
 
     train_images, train_labels, test_images, test_labels = _load_cifar10(cfg["data"]["root"])
 
