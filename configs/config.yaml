@@ -1,0 +1,32 @@
+experiment:
+  seed: 42
+  device: auto  # "auto", "cuda", or "cpu"
+
+data:
+  root: "./data"
+  batch_size: 128
+  num_workers: 4
+  enhance_ratio: 0.1
+  beta: 3.0
+  pca_sample_blocks: 20000
+  target_size: 32
+
+pca:
+  k_tail: 4
+  mask:
+    - [0, 1, 1, 0]
+    - [1, 1, 1, 1]
+    - [1, 1, 1, 1]
+    - [0, 1, 1, 0]
+  save_path: "./artifacts/freq_stats.pkl"
+
+train:
+  epochs: 100
+  lr: 0.001
+  weight_decay: 5e-4
+  optimizer: adam  # "adam" or "sgd"
+  momentum: 0.9
+
+log:
+  print_every: 50
+  ckpt_dir: "./checkpoints"
