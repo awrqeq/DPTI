@@ -5,20 +5,16 @@ import torch.nn as nn
 from torchvision import models
 
 
-def build_resnet18(num_classes: int = 10) -> nn.Module:
+def build_resnet18(num_classes: int = 10, img_size: int = 32) -> nn.Module:
+    """构建 ResNet-18，根据分辨率选择是否使用 CIFAR 风格 stem。"""
     model = models.resnet18(weights=None)
-    # Adapt for CIFAR-size inputs: smaller conv kernel and no maxpool.
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    model.maxpool = nn.Identity()
+    if img_size <= 64:
+        model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        model.maxpool = nn.Identity()
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
-def accuracy(output: torch.Tensor, target: torch.Tensor) -> float:
-    with torch.no_grad():
-        pred = output.argmax(dim=1)
-        correct = (pred == target).sum().item()
-        return correct / target.size(0)
 def build_densenet121(num_classes: int = 10, cifar_like: bool = True) -> nn.Module:
     """
     构建 DenseNet121。
@@ -27,9 +23,9 @@ def build_densenet121(num_classes: int = 10, cifar_like: bool = True) -> nn.Modu
     """
     model = models.densenet121(pretrained=False)
     if cifar_like:
-        # 改成 3x3 conv, stride=1，去掉 pool0，适合 CIFAR / GTSRB 等小图
         model.features.conv0 = nn.Conv2d(
-            3, 64,
+            3,
+            64,
             kernel_size=3,
             stride=1,
             padding=1,
@@ -37,7 +33,13 @@ def build_densenet121(num_classes: int = 10, cifar_like: bool = True) -> nn.Modu
         )
         model.features.pool0 = nn.Identity()
 
-    # 替换分类头
     in_features = model.classifier.in_features
     model.classifier = nn.Linear(in_features, num_classes)
     return model
+
+
+def accuracy(output: torch.Tensor, target: torch.Tensor) -> float:
+    with torch.no_grad():
+        pred = output.argmax(dim=1)
+        correct = (pred == target).sum().item()
+        return correct / target.size(0)

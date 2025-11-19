@@ -12,22 +12,19 @@ data:
   marked_ratio: 0.1
   beta: 2.0
   pca_sample_blocks: 20000
+  block_size: 4
 
   # 仅 imagenette 需要
   # train_root: /path/to/imagenette/train
   # test_root: /path/to/imagenette/val
 model:
-  name: densenet121    # 或 resnet18
+  name: resnet18    # 或 densenet121
   num_classes: 10      # GTSRB 是 43, imagenette 是 10
 
 pca:
   k_tail: 4
-  mask:
-    - [0, 1, 1, 0]
-    - [1, 1, 1, 1]
-    - [1, 1, 1, 1]
-    - [0, 1, 1, 0]
-  save_path: "./artifacts/freq_stats.pkl"
+  save_path: "./artifacts/freq_stats_cifar4.pkl"
+  # mask 不设置时自动根据数据集 + block_size 生成
 
 train:
   epochs: 200
@@ -39,6 +36,8 @@ train:
 
   scheduler: "cosine"     # 或 "none"
   eta_min: 0.0001
+  amp: true
 log:
   print_every: 50
   ckpt_dir: "./checkpoints"
+  log_dir: "./logs"
