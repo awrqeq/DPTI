@@ -26,7 +26,6 @@ from tqdm import tqdm
 
 _DCT_CACHE: dict[tuple[int, str], torch.Tensor] = {}
 
-
 def _cache_key(block_size: int, device: torch.device) -> tuple[int, str]:
     device = torch.device(device)
     return block_size, f"{device.type}:{device.index if device.index is not None else -1}"
@@ -119,6 +118,8 @@ def _legacy_cifar4_mask() -> List[Tuple[int, int]]:
     )
     return list(map(tuple, np.argwhere(mask > 0)))
 
+def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
+    """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
 
 def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
     """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
@@ -379,6 +380,7 @@ class FrequencyTagger:
         y = y.to(img.device)
         u_ch = u_ch.to(img.device)
         v_ch = v_ch.to(img.device)
+
         coeffs = block_dct(y, block_size=self.block_size)[0]  # (hb, wb, bs, bs)
         hb, wb = coeffs.shape[:2]
         flat = coeffs.contiguous().view(hb * wb, self.block_size * self.block_size)

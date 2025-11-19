@@ -114,7 +114,6 @@ def main():
         raw_l2 = torch.norm(raw_residual.view(-1)).item()
         raw_mean_abs = raw_residual.abs().mean().item()
 
-
         meta = [
             f"dataset={dataset_name}",
             f"block_size={block_size}",
@@ -131,7 +130,6 @@ def main():
         orig_denorm = img
         tagged_denorm = tagged
         _save_sample(output_dir, idx, orig_denorm, tagged_denorm, residual, meta)
-
         # 始终保存原始 residual 便于后续分析
         torch.save(raw_residual, output_dir / f"sample_{idx:03d}_residual.pt")
 
