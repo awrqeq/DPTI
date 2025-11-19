@@ -1,18 +1,42 @@
 from __future__ import annotations
 
+"""
+主入口：支持可配置 block_size 4/8、数据集感知的中频掩码以及可视化脚本共享的频域流水线。
+- 使用 YAML 配置驱动实验，支持 --config CLI 传参。
+- 基于 FrequencyTagger 进行频域标记，自动匹配全局能量/PSNR。
+- 兼容原有 CIFAR-10 4x4 行为，并扩展至 CIFAR-10(8x8)、GTSRB、ImageNette。
+"""
+
+import argparse
 import random
 from pathlib import Path
 
 import numpy as np
 import torch
-
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.config import ensure_dir, load_config
 from src.data import build_dataloaders, build_datasets, build_pca_loader
-from src.frequency import FrequencyParams, FrequencyStats, build_pca_trigger, collect_mid_vectors
-from src.model import build_resnet18, build_densenet121
+from src.frequency import (
+    FrequencyParams,
+    FrequencyStats,
+    build_pca_trigger,
+    collect_mid_vectors,
+    get_mid_freq_indices,
+)
+from src.model import build_densenet121, build_resnet18
 from src.trainer import create_optimizer, train_and_evaluate
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Config-driven frequency tagging training")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/config.yaml",
+        help="配置文件路径 (YAML)",
+    )
+    return parser.parse_args()
 
 
 def set_seed(seed: int) -> None:
@@ -29,25 +53,33 @@ def resolve_device(cfg_device: str) -> torch.device:
 
 
 def main():
+    args = parse_args()
+
     # ------------------------------
     # 1. 配置 / 随机种子 / 设备
     # ------------------------------
-    cfg = load_config("configs/config.yaml")
+    cfg = load_config(args.config)
     set_seed(cfg["experiment"]["seed"])
     device = resolve_device(cfg["experiment"]["device"])
     print(f"Using device: {device}")
 
-    # cuDNN 加速
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
 
+    dataset_name = cfg["data"]["name"].lower()
+    block_size = int(cfg["data"].get("block_size", 4))
+
     # ------------------------------
     # 2. 频域掩码 & PCA 统计路径
     # ------------------------------
-    import numpy as np   # 防止上面重名（只是示例，如有冲突可删）
+    mask_cfg = cfg.get("pca", {}).get("mask", None)
+    if mask_cfg is not None:
+        mask = [tuple(m) for m in mask_cfg]
+    else:
+        mask = get_mid_freq_indices(dataset_name, block_size)
+    print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
-    mask = np.array(cfg["pca"]["mask"], dtype=np.int32)
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
 
@@ -64,18 +96,28 @@ def main():
         vectors = collect_mid_vectors(
             base_loader,
             mask=mask,
-            sample_blocks=cfg["data"]["pca_sample_blocks"],
+            block_size=block_size,
+            max_blocks=cfg["data"]["pca_sample_blocks"],
             device=device,
         )
         stats = build_pca_trigger(
             vectors,
             k_tail=cfg["pca"]["k_tail"],
             seed=cfg["experiment"]["seed"],
+            block_size=block_size,
+            dataset_name=dataset_name,
         )
         stats.save(pca_path)
         print(f"Saved frequency stats to {pca_path}")
 
-    freq_params = FrequencyParams(stats=stats, mask=mask)
+    freq_params = FrequencyParams(
+        stats=stats,
+        mask=mask,
+        block_size=block_size,
+        dataset_name=dataset_name,
+        match_global_energy=True,
+        base_block_size_for_energy=4,
+    )
 
     # ------------------------------
     # 4. 构建数据集 + DataLoader
@@ -93,11 +135,12 @@ def main():
     # ------------------------------
     model_name = cfg["model"].get("name", "resnet18").lower()
     num_classes = int(cfg["model"].get("num_classes", 10))
+    img_size = int(cfg["data"].get("img_size", 32))
 
     if model_name == "resnet18":
-        model = build_resnet18(num_classes=num_classes).to(device)
+        model = build_resnet18(num_classes=num_classes, img_size=img_size).to(device)
     elif model_name == "densenet121":
-        model = build_densenet121(num_classes=num_classes, cifar_like=(cfg["data"].get("img_size", 32) <= 64)).to(device)
+        model = build_densenet121(num_classes=num_classes, cifar_like=(img_size <= 64)).to(device)
     else:
         raise ValueError(f"Unsupported model name: {model_name}")
 
@@ -146,7 +189,7 @@ def main():
         device=device,
         epochs=epochs,
         scheduler=scheduler,
-        use_amp=True,
+        use_amp=bool(train_cfg.get("amp", True)),
     )
 
 

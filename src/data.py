@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
-from .frequency import FrequencyParams, apply_frequency_mark, normalize_tensor
+from .frequency import FrequencyParams, FrequencyTagger, apply_frequency_mark, normalize_tensor
 
 # -----------------------------
 #  数据集相关的 mean/std
@@ -17,7 +17,7 @@ from .frequency import FrequencyParams, apply_frequency_mark, normalize_tensor
 CIFAR_MEAN = torch.tensor([0.4914, 0.4822, 0.4465], dtype=torch.float32)
 CIFAR_STD = torch.tensor([0.2470, 0.2435, 0.2616], dtype=torch.float32)
 
-# 对 GTSRB / ImageNette 等，可以先用 ImageNet 的 mean/std，后续你可以再精调
+# 对 GTSRB / ImageNette 等，可以先用 ImageNet 的 mean/std
 IMAGENET_MEAN = torch.tensor([0.4850, 0.4560, 0.4060], dtype=torch.float32)
 IMAGENET_STD = torch.tensor([0.2290, 0.2240, 0.2250], dtype=torch.float32)
 
@@ -28,7 +28,6 @@ def get_mean_std(dataset_name: str) -> Tuple[torch.Tensor, torch.Tensor]:
         return CIFAR_MEAN, CIFAR_STD
     if dataset_name in ("gtsrb", "imagenette"):
         return IMAGENET_MEAN, IMAGENET_STD
-    # 默认给个 ImageNet 统计，避免直接炸
     return IMAGENET_MEAN, IMAGENET_STD
 
 
@@ -108,26 +107,18 @@ def _load_dataset(
     resize = transforms.Resize((img_size, img_size))
 
     if dataset_name == "cifar10":
-        # CIFAR10 固定 32x32，你可以选择是否 resize
-        tf_train = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)) if img_size != 32 else transforms.Lambda(lambda x: x),
-                to_tensor,
-            ]
-        )
+        tf_train = transforms.Compose([resize, to_tensor])
         tf_test = tf_train
 
         train_ds = datasets.CIFAR10(root=root, train=True, download=True, transform=tf_train)
         test_ds = datasets.CIFAR10(root=root, train=False, download=True, transform=tf_test)
 
     elif dataset_name == "gtsrb":
-        # 需要 torchvision>=0.9, GTSRB(root, split="train"/"test")
         tf = transforms.Compose([resize, to_tensor])
         train_ds = datasets.GTSRB(root=root, split="train", download=True, transform=tf)
         test_ds = datasets.GTSRB(root=root, split="test", download=True, transform=tf)
 
     elif dataset_name == "imagenette":
-        # 使用 ImageFolder，要求你在 config.yaml 中指定 train_root / test_root
         train_root = data_cfg.get("train_root", None)
         test_root = data_cfg.get("test_root", None)
         if train_root is None or test_root is None:
@@ -141,7 +132,6 @@ def _load_dataset(
     else:
         raise ValueError(f"Unsupported dataset name: {dataset_name}")
 
-    # 将所有样本收集为 Tensor
     train_images: List[torch.Tensor] = []
     train_labels: List[int] = []
     for img, label in train_ds:
@@ -192,10 +182,11 @@ def _build_poisoned_train(
     assert 0.0 <= marked_ratio <= 1.0, "marked_ratio 必须在 [0,1] 之间"
     target_class = int(target_class)
 
-    # 所有非 target_class 样本的索引
     candidate_indices = [i for i, y in enumerate(labels.tolist()) if y != target_class]
     k = int(len(candidate_indices) * marked_ratio)
     selected = set(random.sample(candidate_indices, k)) if k > 0 else set()
+
+    tagger = FrequencyTagger(freq_params, beta=beta)
 
     poisoned_images: List[torch.Tensor] = []
     poisoned_labels: List[int] = []
@@ -205,8 +196,7 @@ def _build_poisoned_train(
 
     for idx, (img, y) in enumerate(zip(images, labels)):
         if idx in selected:
-            # 对被选中样本施加频域增强，并将标签改为 target_class
-            marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
+            marked_img = tagger.apply(img)
             marked_img = normalize_tensor(marked_img, mean, std)
 
             poisoned_images.append(marked_img)
@@ -215,7 +205,6 @@ def _build_poisoned_train(
             marked_images.append(marked_img)
             marked_labels.append(target_class)
         else:
-            # 未被选中样本保持原图和原标签，在此完成归一化
             clean_img = normalize_tensor(img, mean, std)
             poisoned_images.append(clean_img)
             poisoned_labels.append(int(y))
@@ -252,11 +241,12 @@ def _build_marked_test(
     marked_labels: List[int] = []
     target_class = int(target_class)
 
+    tagger = FrequencyTagger(freq_params, beta=beta)
+
     for img, y in zip(images, labels):
         if int(y) == target_class:
-            # 测试阶段只关心「非目标类 + 标记」
             continue
-        marked_img = apply_frequency_mark(img, params=freq_params, beta=beta)
+        marked_img = tagger.apply(img)
         marked_img = normalize_tensor(marked_img, mean, std)
         marked_images.append(marked_img)
         marked_labels.append(int(y))
@@ -288,7 +278,6 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
     train_images, train_labels, test_images, test_labels, dataset_name = _load_dataset(cfg)
     mean, std = get_mean_std(dataset_name)
 
-    # 离线构建中毒训练集
     poisoned_train_images, poisoned_train_labels, marked_train_images, marked_train_labels = _build_poisoned_train(
         train_images,
         train_labels,
@@ -300,12 +289,10 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
         std=std,
     )
 
-    # 干净测试集：一次性归一化
     mean_b = mean.view(1, 3, 1, 1)
     std_b = std.view(1, 3, 1, 1)
     test_images_norm = (test_images - mean_b) / std_b
 
-    # 构造测试集标记版本
     marked_test_images, marked_test_labels = _build_marked_test(
         test_images,
         test_labels,
@@ -360,7 +347,6 @@ def build_dataloaders(cfg, datasets_bundle: DatasetBundle):
         pin_memory=True,
     )
 
-    # 允许 marked_train_dataset 为空
     if len(marked_train_dataset) == 0:
         marked_train_loader = None
         print("marked_ratio=0 → marked_train_loader is disabled.")
@@ -406,6 +392,7 @@ def build_pca_loader(cfg) -> DataLoader:
     """
     为 PCA / 频域统计构建一个 DataLoader。
     使用与训练集相同的数据集类型 & 图像尺寸，但只用 ToTensor(+Resize)，不做归一化。
+    始终先 Resize，确保进入 DCT 前的尺寸与 block_size 对齐。
     """
 
     data_cfg = cfg["data"]
@@ -419,12 +406,7 @@ def build_pca_loader(cfg) -> DataLoader:
     resize = transforms.Resize((img_size, img_size))
 
     if dataset_name == "cifar10":
-        tf = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)) if img_size != 32 else transforms.Lambda(lambda x: x),
-                to_tensor,
-            ]
-        )
+        tf = transforms.Compose([resize, to_tensor])
         base_ds = datasets.CIFAR10(root=root, train=True, download=True, transform=tf)
 
     elif dataset_name == "gtsrb":

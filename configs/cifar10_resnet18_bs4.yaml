@@ -1,0 +1,37 @@
+experiment:
+  seed: 42
+  device: auto
+
+data:
+  name: cifar10
+  root: ./data
+  img_size: 32
+  batch_size: 128
+  num_workers: 8
+  target_class: 0
+  marked_ratio: 0.1
+  beta: 2.0
+  pca_sample_blocks: 20000
+  block_size: 4
+
+model:
+  name: resnet18
+  num_classes: 10
+
+pca:
+  k_tail: 4
+  save_path: ./artifacts/freq_stats_cifar4.pkl
+
+train:
+  epochs: 200
+  optimizer: sgd
+  lr: 0.1
+  weight_decay: 0.0005
+  momentum: 0.9
+  scheduler: cosine
+  eta_min: 0.0001
+  amp: true
+
+log:
+  ckpt_dir: ./checkpoints
+  log_dir: ./logs
