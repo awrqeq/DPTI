@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=str, default="./visualizations", help="输出目录")
     parser.add_argument("--scale", type=float, default=20.0, help="残差可视化放大倍数")
     parser.add_argument("--save-pt", action="store_true", help="兼容参数：残差 .pt 始终保存")
+
     return parser.parse_args()
 
 
@@ -113,6 +114,7 @@ def main():
         raw_l2 = torch.norm(raw_residual.view(-1)).item()
         raw_mean_abs = raw_residual.abs().mean().item()
 
+
         meta = [
             f"dataset={dataset_name}",
             f"block_size={block_size}",
@@ -129,6 +131,7 @@ def main():
         orig_denorm = img
         tagged_denorm = tagged
         _save_sample(output_dir, idx, orig_denorm, tagged_denorm, residual, meta)
+
         # 始终保存原始 residual 便于后续分析
         torch.save(raw_residual, output_dir / f"sample_{idx:03d}_residual.pt")
 

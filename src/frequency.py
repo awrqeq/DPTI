@@ -126,6 +126,7 @@ def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> t
     mask_sorted = sorted(mask, key=lambda p: (p[0], p[1]))
     mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
     for u, v in mask_sorted:
+
         mask_tensor[u, v] = True
     flat = mask_tensor.view(-1)
     # 使用顺序索引可保证 row-major 顺序稳定
@@ -226,6 +227,7 @@ def collect_mid_vectors(
                 flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
                 vectors = flat[:, flat_indices]
                 vectors = vectors.to(device=device, dtype=torch.float64)
+
                 collected.append(vectors.cpu())
                 pbar.update(vectors.size(0))
                 if sum(v.shape[0] for v in collected) >= max_blocks:
@@ -377,7 +379,6 @@ class FrequencyTagger:
         y = y.to(img.device)
         u_ch = u_ch.to(img.device)
         v_ch = v_ch.to(img.device)
-
         coeffs = block_dct(y, block_size=self.block_size)[0]  # (hb, wb, bs, bs)
         hb, wb = coeffs.shape[:2]
         flat = coeffs.contiguous().view(hb * wb, self.block_size * self.block_size)
@@ -396,6 +397,7 @@ class FrequencyTagger:
         y_rec = torch.clamp(y_rec, 0.0, 255.0)
         rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
         return torch.clamp(rgb.to(img.device).to(torch.float32), 0.0, 1.0)
+
 
 
 # ---------------------------------------------------------------------------
