@@ -372,7 +372,7 @@ class FrequencyTagger:
     def apply(self, img: torch.Tensor) -> torch.Tensor:
         """对单张 [0,1] 图像施加频域标记，返回裁剪到 [0,1] 的张量。"""
         assert img.dim() == 3 and img.shape[0] == 3, "img 需要形状 (3,H,W)"
-        img = torch.clamp(img, 0.0, 1.0)
+        img = torch.clamp(img.clone().detach(), 0.0, 1.0)
         h, w = img.shape[1:]
         beta_scaled = self._scaled_beta(h, w)
 
