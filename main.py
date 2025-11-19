@@ -78,6 +78,7 @@ def main():
         mask = [tuple(m) for m in mask_cfg]
     else:
         mask = get_mid_freq_indices(dataset_name, block_size)
+    print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)

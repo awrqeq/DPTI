@@ -107,12 +107,7 @@ def _load_dataset(
     resize = transforms.Resize((img_size, img_size))
 
     if dataset_name == "cifar10":
-        tf_train = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)) if img_size != 32 else transforms.Lambda(lambda x: x),
-                to_tensor,
-            ]
-        )
+        tf_train = transforms.Compose([resize, to_tensor])
         tf_test = tf_train
 
         train_ds = datasets.CIFAR10(root=root, train=True, download=True, transform=tf_train)
@@ -397,6 +392,7 @@ def build_pca_loader(cfg) -> DataLoader:
     """
     为 PCA / 频域统计构建一个 DataLoader。
     使用与训练集相同的数据集类型 & 图像尺寸，但只用 ToTensor(+Resize)，不做归一化。
+    始终先 Resize，确保进入 DCT 前的尺寸与 block_size 对齐。
     """
 
     data_cfg = cfg["data"]
@@ -410,12 +406,7 @@ def build_pca_loader(cfg) -> DataLoader:
     resize = transforms.Resize((img_size, img_size))
 
     if dataset_name == "cifar10":
-        tf = transforms.Compose(
-            [
-                transforms.Resize((img_size, img_size)) if img_size != 32 else transforms.Lambda(lambda x: x),
-                to_tensor,
-            ]
-        )
+        tf = transforms.Compose([resize, to_tensor])
         base_ds = datasets.CIFAR10(root=root, train=True, download=True, transform=tf)
 
     elif dataset_name == "gtsrb":

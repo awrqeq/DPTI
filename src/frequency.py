@@ -24,19 +24,30 @@ from tqdm import tqdm
 # DCT/IDCT 基础
 # ---------------------------------------------------------------------------
 
-_DCT_CACHE: dict[int, torch.Tensor] = {}
+_DCT_CACHE: dict[tuple[int, str], torch.Tensor] = {}
 
 
-def build_dct_matrix(block_size: int) -> torch.Tensor:
-    """构建并缓存给定 block_size 的 DCT 矩阵 (block_size, block_size)。"""
-    if block_size not in _DCT_CACHE:
-        n = torch.arange(block_size, dtype=torch.float64)
+def _cache_key(block_size: int, device: torch.device) -> tuple[int, str]:
+    device = torch.device(device)
+    return block_size, f"{device.type}:{device.index if device.index is not None else -1}"
+
+
+def build_dct_matrix(block_size: int, device: torch.device | str = "cpu") -> torch.Tensor:
+    """构建并缓存给定 block_size 的 DCT 矩阵 (block_size, block_size)。
+
+    - 按设备缓存，避免 GPU/CPU 反复拷贝；dtype 固定 float64 以减少数值误差。
+    """
+
+    device = torch.device(device)
+    key = _cache_key(block_size, device)
+    if key not in _DCT_CACHE:
+        n = torch.arange(block_size, dtype=torch.float64, device=device)
         k = n.view(-1, 1)
         mat = torch.cos(math.pi / block_size * (n + 0.5) * k)
         mat[0] = mat[0] / math.sqrt(block_size)
         mat[1:] = mat[1:] * math.sqrt(2 / block_size)
-        _DCT_CACHE[block_size] = mat
-    return _DCT_CACHE[block_size]
+        _DCT_CACHE[key] = mat
+    return _DCT_CACHE[key]
 
 
 def _block_dct_2d(x: torch.Tensor, block_size: int) -> torch.Tensor:
@@ -47,8 +58,8 @@ def _block_dct_2d(x: torch.Tensor, block_size: int) -> torch.Tensor:
     hb, wb = h // bs, w // bs
     blocks = x.view(hb, bs, wb, bs).permute(0, 2, 1, 3)  # (hb, wb, bs, bs)
 
-    dct = build_dct_matrix(bs).to(x.device, dtype=torch.float64)
-    blocks = blocks.to(torch.float64)
+    dct = build_dct_matrix(bs, device=x.device)
+    blocks = blocks.to(dtype=torch.float64)
     temp = torch.einsum("ij,abjk->abik", dct, blocks)
     coeffs = torch.einsum("abij,jk->abik", temp, dct.t())
     coeffs = coeffs.unsqueeze(0)  # (1, hb, wb, bs, bs)
@@ -60,7 +71,7 @@ def _block_idct_2d(blocks: torch.Tensor, block_size: int, h: int, w: int) -> tor
     bs = block_size
     hb, wb = h // bs, w // bs
     blocks = blocks.squeeze(0)  # (hb, wb, bs, bs)
-    dct = build_dct_matrix(bs).to(blocks.device, dtype=torch.float64)
+    dct = build_dct_matrix(bs, device=blocks.device)
     temp = torch.einsum("abij,jk->abik", blocks, dct)
     spatial = torch.einsum("ij,abjk->abik", dct.t(), temp)
     spatial = spatial.permute(0, 2, 1, 3).contiguous().view(h, w)
@@ -107,6 +118,17 @@ def _legacy_cifar4_mask() -> List[Tuple[int, int]]:
         dtype=np.int32,
     )
     return list(map(tuple, np.argwhere(mask > 0)))
+
+
+def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
+    """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
+    mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
+    for u, v in mask:
+        mask_tensor[u, v] = True
+    flat = mask_tensor.view(-1)
+    # 使用顺序索引可保证 row-major 顺序稳定
+    indices = torch.arange(flat.numel(), dtype=torch.long)[flat]
+    return indices
 
 
 def get_mid_freq_indices(dataset_name: str, block_size: int) -> List[Tuple[int, int]]:
@@ -177,10 +199,7 @@ def collect_mid_vectors(
     """收集分块 DCT 中频向量，数量上限为 max_blocks。"""
 
     device = torch.device(device)
-    mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
-    for u, v in mask:
-        mask_tensor[u, v] = True
-    flat_indices = mask_tensor.view(-1).nonzero(as_tuple=False).view(-1)
+    flat_indices = _mask_to_flat_indices(mask, block_size).to(device)
 
     collected: List[torch.Tensor] = []
     with tqdm(total=max_blocks, desc="Collecting frequency vectors") as pbar:
@@ -189,6 +208,7 @@ def collect_mid_vectors(
             for img in images:
                 # img: (C,H,W) in [0,1]
                 y_channel = to_y_channel(img)
+                y_channel = torch.clamp(y_channel, 0.0, 255.0)
                 coeffs = block_dct(y_channel, block_size=block_size)[0]  # (hb, wb, bs, bs)
                 hb, wb = coeffs.shape[:2]
                 flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
@@ -250,15 +270,30 @@ class FrequencyParams:
 # ---------------------------------------------------------------------------
 
 
-def to_y_channel(img: torch.Tensor) -> torch.Tensor:
-    """将 (C,H,W) RGB 转为单通道 Y，范围 [0,255]，dtype=float64。"""
+def rgb_to_yuv(img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """RGB→YUV（BT.601），完全对称且在 [0,255] 空间内运算。"""
+
     assert img.dim() == 3 and img.shape[0] == 3, "输入应为 (3,H,W)"
-    weights = torch.tensor([0.299, 0.587, 0.114], device=img.device, dtype=torch.float64)
-    return (img.to(torch.float64) * 255.0 * weights.view(3, 1, 1)).sum(dim=0)
+    img_255 = torch.clamp(img.to(torch.float64), 0.0, 1.0) * 255.0
+    r, g, b = img_255
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    u = -0.168736 * r - 0.331264 * g + 0.5 * b + 128.0
+    v = 0.5 * r - 0.418688 * g - 0.081312 * b + 128.0
+    y = torch.clamp(y, 0.0, 255.0)
+    u = torch.clamp(u, 0.0, 255.0)
+    v = torch.clamp(v, 0.0, 255.0)
+    return y, u, v
+
+
+def to_y_channel(img: torch.Tensor) -> torch.Tensor:
+    """取 Y 通道并保证范围 [0,255]，dtype=float64。"""
+    y, _, _ = rgb_to_yuv(img)
+    return torch.clamp(y, 0.0, 255.0)
 
 
 def yuv_to_rgb(y: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """BT.601 反变换，输入/输出均为 [0,255] 范围。"""
+    """YUV→RGB（BT.601），输入/输出均在 [0,255] 空间。"""
+
     y = y.to(torch.float64)
     u = u.to(torch.float64) - 128.0
     v = v.to(torch.float64) - 128.0
@@ -270,10 +305,8 @@ def yuv_to_rgb(y: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tenso
 
 
 def extract_uv(img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    """从 RGB 提取 U/V 分量（仍在 [0,255] 空间内，加上偏移）。"""
-    r, g, b = (img * 255.0).to(torch.float64)
-    u = -0.168736 * r - 0.331264 * g + 0.5 * b + 128.0
-    v = 0.5 * r - 0.418688 * g - 0.081312 * b + 128.0
+    """复用对称 RGB→YUV 公式，避免色彩漂移。"""
+    _, u, v = rgb_to_yuv(img)
     return u, v
 
 
@@ -300,11 +333,7 @@ class FrequencyTagger:
         self.block_size = params.block_size
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
-
-        mask_tensor = torch.zeros((self.block_size, self.block_size), dtype=torch.bool)
-        for u, v in self.mask_indices:
-            mask_tensor[u, v] = True
-        self.mask_flat = mask_tensor.view(-1).nonzero(as_tuple=False).view(-1)
+        self.mask_flat = _mask_to_flat_indices(self.mask_indices, self.block_size)
 
     def _scaled_beta(self, h: int, w: int) -> float:
         if not self.params.match_global_energy:
@@ -322,23 +351,24 @@ class FrequencyTagger:
         h, w = img.shape[1:]
         beta_scaled = self._scaled_beta(h, w)
 
-        u_ch, v_ch = extract_uv(img)
-        y = to_y_channel(img)
+        y, u_ch, v_ch = rgb_to_yuv(img)
 
         coeffs = block_dct(y, block_size=self.block_size)[0]  # (hb, wb, bs, bs)
         hb, wb = coeffs.shape[:2]
         flat = coeffs.contiguous().view(hb * wb, self.block_size * self.block_size)
-        vectors = flat[:, self.mask_flat]
+        mask_flat = self.mask_flat.to(flat.device)
+        vectors = flat[:, mask_flat]
 
         w_vec = self.w.to(vectors.device)
         proj = (vectors * w_vec).sum(dim=1, keepdim=True)
         deltas = (beta_scaled - proj) * w_vec.unsqueeze(0)
         vectors_new = vectors + deltas
 
-        flat[:, self.mask_flat] = vectors_new
+        flat[:, mask_flat] = vectors_new
         coeffs_new = flat.view(hb, wb, self.block_size, self.block_size)
 
         y_rec = block_idct(coeffs_new.unsqueeze(0), self.block_size, h, w)[0]
+        y_rec = torch.clamp(y_rec, 0.0, 255.0)
         rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
         return torch.clamp(rgb.to(torch.float32), 0.0, 1.0)
 
@@ -348,8 +378,18 @@ class FrequencyTagger:
 # ---------------------------------------------------------------------------
 
 
-def apply_frequency_mark(image: torch.Tensor, params: FrequencyParams, beta: float) -> torch.Tensor:
-    tagger = FrequencyTagger(params, beta=beta)
+def apply_frequency_mark(
+    image: torch.Tensor,
+    params: FrequencyParams,
+    beta: float,
+    tagger: FrequencyTagger | None = None,
+) -> torch.Tensor:
+    """兼容旧接口的轻量包装：内部复用 FrequencyTagger。
+
+    传入已有 tagger 可避免重复构造（DCT 矩阵已按设备缓存）。
+    """
+
+    tagger = tagger or FrequencyTagger(params, beta=beta)
     return tagger.apply(image)
 
 

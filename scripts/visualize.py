@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, required=True, help="实验配置文件路径")
     parser.add_argument("--num-samples", type=int, default=8, help="要可视化的样本数量")
     parser.add_argument("--output-dir", type=str, default="./visualizations", help="输出目录")
+    parser.add_argument("--scale", type=float, default=20.0, help="残差可视化放大倍数")
+    parser.add_argument("--save-pt", action="store_true", help="额外保存未放大的残差 .pt 文件")
     return parser.parse_args()
 
 
@@ -77,6 +79,7 @@ def main():
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
     mask = [tuple(m) for m in mask_cfg] if mask_cfg is not None else get_mid_freq_indices(dataset_name, block_size)
+    print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
     stats = _load_or_build_stats(cfg, mask, block_size, dataset_name)
     freq_params = FrequencyParams(
@@ -100,7 +103,8 @@ def main():
     for idx in range(num_samples):
         img = train_images[idx]
         tagged = tagger.apply(img)
-        residual = torch.abs(tagged - img) * 20.0
+        raw_residual = tagged - img
+        residual = torch.abs(raw_residual) * float(args.scale)
         residual = torch.clamp(residual, 0.0, 1.0)
 
         psnr = compute_psnr(img, tagged)
@@ -121,6 +125,9 @@ def main():
         orig_denorm = img
         tagged_denorm = tagged
         _save_sample(output_dir, idx, orig_denorm, tagged_denorm, residual, meta)
+
+        if args.save_pt:
+            torch.save(raw_residual, output_dir / f"sample_{idx:03d}_residual.pt")
 
     print(f"Saved visualization to {output_dir.resolve()}")
 
