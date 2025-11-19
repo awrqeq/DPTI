@@ -9,7 +9,7 @@ data:
   batch_size: 128
   num_workers: 8
   target_class: 0
-  marked_ratio: 0.1
+  marked_ratio: 0.05
   beta: 2.0
   pca_sample_blocks: 20000
   block_size: 4
@@ -31,6 +31,10 @@ train:
   scheduler: cosine
   eta_min: 0.0001
   amp: true
+
+frequency:
+  lambda_align: 0.7
+  use_smallest_eigvec_only: true
 
 log:
   ckpt_dir: ./checkpoints

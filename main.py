@@ -63,6 +63,10 @@ def main():
     device = resolve_device(cfg["experiment"]["device"])
     print(f"Using device: {device}")
 
+    freq_cfg = cfg.get("frequency", {})
+    lambda_align = float(freq_cfg.get("lambda_align", 1.0))
+    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", True))
+
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
@@ -106,6 +110,7 @@ def main():
             seed=cfg["experiment"]["seed"],
             block_size=block_size,
             dataset_name=dataset_name,
+            use_smallest_eigvec_only=use_smallest_eigvec_only,
         )
         stats.save(pca_path)
         print(f"Saved frequency stats to {pca_path}")
@@ -117,6 +122,7 @@ def main():
         dataset_name=dataset_name,
         match_global_energy=True,
         base_block_size_for_energy=4,
+        lambda_align=lambda_align,
     )
 
     # ------------------------------
