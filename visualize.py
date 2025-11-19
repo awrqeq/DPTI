@@ -138,17 +138,18 @@ def main() -> None:
 
     for idx in range(num_samples):
         img = torch.clamp(train_images[idx].to(device), 0.0, 1.0)
-        tagged = tagger.apply(img)
-        raw_residual = tagged - img
+        orig = img.clone().detach()
+        tagged = tagger.apply(img.clone().detach())
+        raw_residual = tagged - orig
 
-        psnr = compute_psnr(img, tagged)
+        psnr = compute_psnr(orig, tagged)
         l2 = torch.norm(raw_residual.view(-1)).item()
-        eff_beta = tagger._scaled_beta(img.shape[1], img.shape[2])
+        eff_beta = tagger._scaled_beta(orig.shape[1], orig.shape[2])
         mean_abs = raw_residual.abs().mean().item()
 
         torch.save(raw_residual.cpu(), output_dir / f"raw_residual_{idx:03d}.pt")
 
-        img_vis = torch.clamp(img, 0.0, 1.0).detach().cpu().permute(1, 2, 0).numpy()
+        img_vis = torch.clamp(orig, 0.0, 1.0).detach().cpu().permute(1, 2, 0).numpy()
         tagged_vis = torch.clamp(tagged, 0.0, 1.0).detach().cpu().permute(1, 2, 0).numpy()
         residual_vis = torch.clamp(raw_residual.abs() * float(args.scale), 0.0, 1.0)
         residual_vis = residual_vis.mean(dim=0).detach().cpu().numpy()
