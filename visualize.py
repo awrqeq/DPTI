@@ -44,7 +44,14 @@ def resolve_device(cfg_device: str) -> torch.device:
     return torch.device(cfg_device)
 
 
-def _load_or_build_stats(cfg, mask, block_size, dataset_name, device) -> FrequencyStats:
+def _load_or_build_stats(
+    cfg,
+    mask,
+    block_size,
+    dataset_name,
+    device,
+    use_smallest_eigvec_only: bool,
+) -> FrequencyStats:
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
     if pca_path.exists():
@@ -66,6 +73,7 @@ def _load_or_build_stats(cfg, mask, block_size, dataset_name, device) -> Frequen
         seed=cfg["experiment"]["seed"],
         block_size=block_size,
         dataset_name=dataset_name,
+        use_smallest_eigvec_only=use_smallest_eigvec_only,
     )
     stats.save(pca_path)
     return stats
@@ -99,13 +107,23 @@ def main():
     dataset_name = cfg["data"]["name"].lower()
     block_size = int(cfg["data"].get("block_size", 4))
     beta = float(cfg["data"]["beta"])
+    freq_cfg = cfg.get("frequency", {})
+    lambda_align = float(freq_cfg.get("lambda_align", 1.0))
+    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", True))
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
     mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
 
     print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
 
-    stats = _load_or_build_stats(cfg, mask, block_size, dataset_name, device)
+    stats = _load_or_build_stats(
+        cfg,
+        mask,
+        block_size,
+        dataset_name,
+        device,
+        use_smallest_eigvec_only=use_smallest_eigvec_only,
+    )
     freq_params = FrequencyParams(
         stats=stats,
         mask=mask,
@@ -113,8 +131,9 @@ def main():
         dataset_name=dataset_name,
         match_global_energy=True,
         base_block_size_for_energy=4,
+        lambda_align=lambda_align,
     )
-    tagger = FrequencyTagger(freq_params, beta=beta)
+    tagger = FrequencyTagger(freq_params, beta=beta, lambda_align=lambda_align)
 
     train_images, train_labels, _, _, _ = _load_dataset(cfg)
     num_samples = min(args.num_samples, train_images.shape[0])

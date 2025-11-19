@@ -186,7 +186,7 @@ def _build_poisoned_train(
     k = int(len(candidate_indices) * marked_ratio)
     selected = set(random.sample(candidate_indices, k)) if k > 0 else set()
 
-    tagger = FrequencyTagger(freq_params, beta=beta)
+    tagger = FrequencyTagger(freq_params, beta=beta, lambda_align=freq_params.lambda_align)
 
     poisoned_images: List[torch.Tensor] = []
     poisoned_labels: List[int] = []
@@ -241,7 +241,7 @@ def _build_marked_test(
     marked_labels: List[int] = []
     target_class = int(target_class)
 
-    tagger = FrequencyTagger(freq_params, beta=beta)
+    tagger = FrequencyTagger(freq_params, beta=beta, lambda_align=freq_params.lambda_align)
 
     for img, y in zip(images, labels):
         if int(y) == target_class:

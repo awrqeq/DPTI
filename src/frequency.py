@@ -162,6 +162,7 @@ class FrequencyStats:
     w: np.ndarray
     block_size: int
     dataset_name: str
+    use_smallest_eigvec_only: bool = True
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -174,6 +175,7 @@ class FrequencyStats:
             "w": self.w,
             "block_size": self.block_size,
             "dataset_name": self.dataset_name,
+            "use_smallest_eigvec_only": self.use_smallest_eigvec_only,
         }
         with path.open("wb") as f:
             pickle.dump(payload, f)
@@ -190,6 +192,7 @@ class FrequencyStats:
             w=data["w"],
             block_size=data.get("block_size", 4),
             dataset_name=data.get("dataset_name", "cifar10"),
+            use_smallest_eigvec_only=data.get("use_smallest_eigvec_only", False),
         )
 
 
@@ -246,6 +249,7 @@ def build_pca_trigger(
     seed: int = 42,
     block_size: int = 4,
     dataset_name: str = "cifar10",
+    use_smallest_eigvec_only: bool = True,
 ) -> FrequencyStats:
     """从中频向量中计算 PCA 尾子空间方向。"""
     rng = np.random.default_rng(seed)
@@ -254,11 +258,15 @@ def build_pca_trigger(
     cov = np.cov(centered, rowvar=False)
     eigvals, eigvecs = np.linalg.eigh(cov)
     idx = np.argsort(eigvals)
-    tail_idx = idx[:k_tail]
-    tail_vecs = eigvecs[:, tail_idx]
-    a = rng.standard_normal(k_tail)
-    a = a / np.linalg.norm(a)
-    w = tail_vecs @ a
+    if use_smallest_eigvec_only:
+        smallest_idx = int(idx[0])
+        w = eigvecs[:, smallest_idx]
+    else:
+        tail_idx = idx[:k_tail]
+        tail_vecs = eigvecs[:, tail_idx]
+        a = rng.standard_normal(len(tail_idx))
+        a = a / np.linalg.norm(a)
+        w = tail_vecs @ a
     w = w / np.linalg.norm(w)
     return FrequencyStats(
         mu=mu,
@@ -268,6 +276,7 @@ def build_pca_trigger(
         w=w,
         block_size=block_size,
         dataset_name=dataset_name,
+        use_smallest_eigvec_only=use_smallest_eigvec_only,
     )
 
 
@@ -279,6 +288,7 @@ class FrequencyParams:
     dataset_name: str
     match_global_energy: bool = True
     base_block_size_for_energy: int = 4
+    lambda_align: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +352,12 @@ class FrequencyTagger:
     - 针对不同数据集的 mask 及统计量可复用。
     """
 
-    def __init__(self, params: FrequencyParams, beta: float):
+    def __init__(
+        self,
+        params: FrequencyParams,
+        beta: float,
+        lambda_align: float | None = None,
+    ):
         self.params = params
         self.beta = float(beta)
         self.mask_indices = sorted(list(params.mask), key=lambda p: (p[0], p[1]))
@@ -350,6 +365,9 @@ class FrequencyTagger:
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
         self.mask_flat = _mask_to_flat_indices(self.mask_indices, self.block_size)
+        if lambda_align is None:
+            lambda_align = getattr(params, "lambda_align", 1.0)
+        self.lambda_align = float(lambda_align)
 
     def _scaled_beta(self, h: int, w: int) -> float:
         if not self.params.match_global_energy:
@@ -411,7 +429,7 @@ class FrequencyTagger:
         # 注入 PCA 尾方向
         # ----------------------------------------------------------
         proj = (vectors * w_vec).sum(dim=1, keepdim=True)
-        deltas = (beta_scaled - proj) * w_vec.unsqueeze(0)
+        deltas = self.lambda_align * (beta_scaled - proj) * w_vec.unsqueeze(0)
 
         vectors_new = vectors + deltas
         flat[:, mask_flat] = vectors_new
@@ -451,7 +469,7 @@ def apply_frequency_mark(
     传入已有 tagger 可避免重复构造（DCT 矩阵已按设备缓存）。
     """
 
-    tagger = tagger or FrequencyTagger(params, beta=beta)
+    tagger = tagger or FrequencyTagger(params, beta=beta, lambda_align=params.lambda_align)
     return tagger.apply(image)
 
 
