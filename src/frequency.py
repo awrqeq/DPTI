@@ -370,35 +370,68 @@ class FrequencyTagger:
         return scaled
 
     def apply(self, img: torch.Tensor) -> torch.Tensor:
-        """对单张 [0,1] 图像施加频域标记，返回裁剪到 [0,1] 的张量。"""
-        assert img.dim() == 3 and img.shape[0] == 3, "img 需要形状 (3,H,W)"
-        img = torch.clamp(img.clone().detach(), 0.0, 1.0)
-        h, w = img.shape[1:]
+        """
+        对单张 [0,1] 图像施加频域标记。
+        必须保证不修改输入图像，否则 PSNR 永远错误。
+        """
+
+        # ----------------------------------------------------------
+        # 🔥 第一行：深拷贝输入，彻底切断所有共享内存
+        # ----------------------------------------------------------
+        img = img.clone().detach().to(torch.float32)
+
+        # clamp 不能代替 clone，它不会深拷贝
+        img = torch.clamp(img, 0.0, 1.0)
+
+        # ----------------------------------------------------------
+        # YUV 转换
+        # ----------------------------------------------------------
+        y, u_ch, v_ch = rgb_to_yuv(img)
+        y = y.to(torch.float64)
+        u_ch = u_ch.to(torch.float64)
+        v_ch = v_ch.to(torch.float64)
+
+        h, w = y.shape
         beta_scaled = self._scaled_beta(h, w)
 
-        y, u_ch, v_ch = rgb_to_yuv(img)
-        y = y.to(img.device)
-        u_ch = u_ch.to(img.device)
-        v_ch = v_ch.to(img.device)
+        # ----------------------------------------------------------
+        # 分块 DCT
+        # ----------------------------------------------------------
+        coeffs = block_dct(y, self.block_size)[0]  # (hb, wb, bs, bs)
 
-        coeffs = block_dct(y, block_size=self.block_size)[0]  # (hb, wb, bs, bs)
         hb, wb = coeffs.shape[:2]
-        flat = coeffs.contiguous().view(hb * wb, self.block_size * self.block_size)
+        flat = coeffs.reshape(hb * wb, self.block_size * self.block_size).clone()
+
         mask_flat = self.mask_flat.to(flat.device)
         vectors = flat[:, mask_flat]
 
         w_vec = self.w.to(vectors.device)
+
+        # ----------------------------------------------------------
+        # 注入 PCA 尾方向
+        # ----------------------------------------------------------
         proj = (vectors * w_vec).sum(dim=1, keepdim=True)
         deltas = (beta_scaled - proj) * w_vec.unsqueeze(0)
-        vectors_new = vectors + deltas
 
+        vectors_new = vectors + deltas
         flat[:, mask_flat] = vectors_new
+
         coeffs_new = flat.view(hb, wb, self.block_size, self.block_size)
 
+        # ----------------------------------------------------------
+        # 反 DCT
+        # ----------------------------------------------------------
         y_rec = block_idct(coeffs_new.unsqueeze(0), self.block_size, h, w)[0]
         y_rec = torch.clamp(y_rec, 0.0, 255.0)
+
+        # ----------------------------------------------------------
+        # 还原 RGB
+        # ----------------------------------------------------------
         rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
-        return torch.clamp(rgb.to(img.device).to(torch.float32), 0.0, 1.0)
+        rgb = torch.clamp(rgb, 0.0, 1.0)
+
+        # 返回完全独立的新张量
+        return rgb.to(torch.float32)
 
 
 

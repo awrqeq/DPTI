@@ -2,12 +2,9 @@ from __future__ import annotations
 
 """
 可视化入口（根目录）：
-- 读取配置并与主流程一致地构建 PCA/掩码/频域标记器。
-- 从未归一化的训练数据中抽样，生成单张三列多行的大图：原图 / 标记图 / 残差（abs(raw_residual)*scale）。
-- 在图中直接写入 PSNR、L2、effective_beta、block_size、dataset_name 等指标，另存原始残差 .pt。
-
-运行示例：
-    python visualize.py --config configs/cifar10_resnet18_bs8.yaml --num-samples 4 --output-dir ./visualizations --scale 20
+- 原图 / 标记图 / 残差图 三列展示
+- 保证 original 与 tagged 完全独立，不被污染
+- PSNR、L2、mean|res|、effective_beta 正确显示
 """
 
 import argparse
@@ -34,11 +31,10 @@ from src.frequency import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="频域标记可视化（汇总图）")
-    parser.add_argument("--config", type=str, required=True, help="配置文件路径 (YAML)")
-    parser.add_argument("--num-samples", type=int, default=4, help="可视化的样本行数")
-    parser.add_argument("--output-dir", type=str, default="./visualizations", help="输出目录")
-    parser.add_argument("--scale", type=float, default=20.0, help="残差可视化放大倍数")
-    parser.add_argument("--save-pt", action="store_true", help="兼容参数：残差 pt 始终保存")
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--num-samples", type=int, default=4)
+    parser.add_argument("--output-dir", type=str, default="./visualizations")
+    parser.add_argument("--scale", type=float, default=20.0)
     return parser.parse_args()
 
 
@@ -48,9 +44,7 @@ def resolve_device(cfg_device: str) -> torch.device:
     return torch.device(cfg_device)
 
 
-def _load_or_build_stats(
-    cfg, mask: Sequence[Tuple[int, int]], block_size: int, dataset_name: str, device: torch.device
-) -> FrequencyStats:
+def _load_or_build_stats(cfg, mask, block_size, dataset_name, device) -> FrequencyStats:
     pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
     if pca_path.exists():
@@ -77,7 +71,7 @@ def _load_or_build_stats(
     return stats
 
 
-def _prepare_subplot(ax, image: np.ndarray, title: str, metrics: str, cmap: str | None = None) -> None:
+def _prepare_subplot(ax, image: np.ndarray, title: str, metrics: str, cmap=None):
     if cmap:
         ax.imshow(image, cmap=cmap, vmin=0.0, vmax=1.0)
     else:
@@ -95,7 +89,7 @@ def _prepare_subplot(ax, image: np.ndarray, title: str, metrics: str, cmap: str 
     )
 
 
-def main() -> None:
+def main():
     args = parse_args()
     cfg = load_config(args.config)
 
@@ -107,8 +101,9 @@ def main() -> None:
     beta = float(cfg["data"]["beta"])
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
-    mask = [tuple(m) for m in mask_cfg] if mask_cfg is not None else get_mid_freq_indices(dataset_name, block_size)
-    print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
+    mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
+
+    print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
 
     stats = _load_or_build_stats(cfg, mask, block_size, dataset_name, device)
     freq_params = FrequencyParams(
@@ -130,18 +125,19 @@ def main() -> None:
     fig = plt.figure(figsize=(12, 3 * num_samples))
     grid = gridspec.GridSpec(num_samples, 3, figure=fig, wspace=0.05, hspace=0.35)
 
-    suptitle = (
-        f"Dataset = {dataset_name}, Block = {block_size}, Beta = {beta}, "
-        f"PCA path = {cfg['pca']['save_path']}"
+    fig.suptitle(
+        f"Dataset={dataset_name}, Block={block_size}, Beta={beta}, PCA={cfg['pca']['save_path']}",
+        fontsize=12,
     )
-    fig.suptitle(suptitle, fontsize=12)
 
     for idx in range(num_samples):
+        # ----------- 正确的原图 / 注入图逻辑 ------------
         img = torch.clamp(train_images[idx].to(device), 0.0, 1.0)
         orig = img.clone().detach()
         tagged = tagger.apply(img.clone().detach())
         raw_residual = tagged - orig
 
+        # ---------- 指标 ----------
         psnr = compute_psnr(orig, tagged)
         l2 = torch.norm(raw_residual.view(-1)).item()
         eff_beta = tagger._scaled_beta(orig.shape[1], orig.shape[2])
@@ -149,16 +145,19 @@ def main() -> None:
 
         torch.save(raw_residual.cpu(), output_dir / f"raw_residual_{idx:03d}.pt")
 
-        img_vis = torch.clamp(orig, 0.0, 1.0).detach().cpu().permute(1, 2, 0).numpy()
-        tagged_vis = torch.clamp(tagged, 0.0, 1.0).detach().cpu().permute(1, 2, 0).numpy()
-        residual_vis = torch.clamp(raw_residual.abs() * float(args.scale), 0.0, 1.0)
+        # ---------- 可视化数据 ----------
+        img_vis = orig.detach().cpu().permute(1, 2, 0).numpy()
+        tagged_vis = tagged.detach().cpu().permute(1, 2, 0).numpy()
+
+        residual_vis = torch.clamp(raw_residual.abs() * args.scale, 0.0, 1.0)
         residual_vis = residual_vis.mean(dim=0).detach().cpu().numpy()
 
         metrics_text = (
             f"PSNR={psnr:.2f} | L2={l2:.4f} | mean|res|={mean_abs:.4f}\n"
-            f"eff_beta={eff_beta:.4f} | block={block_size} | dataset={dataset_name}"
+            f"eff_beta={eff_beta:.4f} | block={block_size}"
         )
 
+        # ---------- 三列可视化 ----------
         ax_orig = fig.add_subplot(grid[idx, 0])
         _prepare_subplot(ax_orig, img_vis, "Original", metrics_text)
 
@@ -173,8 +172,8 @@ def main() -> None:
     fig.savefig(summary_path, dpi=200)
     plt.close(fig)
 
-    print(f"Saved visualization summary to {summary_path.resolve()}")
-    print(f"Raw residual tensors stored in {output_dir.resolve()}")
+    print(f"Saved visualization to {summary_path}")
+    print(f"Residual tensors saved in {output_dir}")
 
 
 if __name__ == "__main__":
