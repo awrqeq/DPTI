@@ -122,8 +122,11 @@ def _legacy_cifar4_mask() -> List[Tuple[int, int]]:
 
 def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
     """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
+
+    mask_sorted = sorted(mask, key=lambda p: (p[0], p[1]))
     mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
-    for u, v in mask:
+    for u, v in mask_sorted:
+
         mask_tensor[u, v] = True
     flat = mask_tensor.view(-1)
     # 使用顺序索引可保证 row-major 顺序稳定
@@ -202,17 +205,29 @@ def collect_mid_vectors(
     flat_indices = _mask_to_flat_indices(mask, block_size).to(device)
 
     collected: List[torch.Tensor] = []
+    warned = False
     with tqdm(total=max_blocks, desc="Collecting frequency vectors") as pbar:
         for images, _ in loader:
-            images = images.to(device)
+            images = images.to(device=device, dtype=torch.float64)
             for img in images:
                 # img: (C,H,W) in [0,1]
+                h, w = img.shape[1:]
+                if (h % block_size != 0 or w % block_size != 0) and not warned:
+                    print(
+                        f"[collect_mid_vectors] Warning: image size {(h, w)} is not divisible by block_size={block_size},"
+                        " please check resize settings."
+                    )
+                    warned = True
+                assert h % block_size == 0 and w % block_size == 0, "img_size must be divisible by block_size"
+
                 y_channel = to_y_channel(img)
-                y_channel = torch.clamp(y_channel, 0.0, 255.0)
+                y_channel = torch.clamp(y_channel.to(device=device, dtype=torch.float64), 0.0, 255.0)
                 coeffs = block_dct(y_channel, block_size=block_size)[0]  # (hb, wb, bs, bs)
                 hb, wb = coeffs.shape[:2]
                 flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
                 vectors = flat[:, flat_indices]
+                vectors = vectors.to(device=device, dtype=torch.float64)
+
                 collected.append(vectors.cpu())
                 pbar.update(vectors.size(0))
                 if sum(v.shape[0] for v in collected) >= max_blocks:
@@ -329,7 +344,7 @@ class FrequencyTagger:
     def __init__(self, params: FrequencyParams, beta: float):
         self.params = params
         self.beta = float(beta)
-        self.mask_indices = list(params.mask)
+        self.mask_indices = sorted(list(params.mask), key=lambda p: (p[0], p[1]))
         self.block_size = params.block_size
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
@@ -341,18 +356,29 @@ class FrequencyTagger:
         ref = self.params.base_block_size_for_energy
         n_ref = (h // ref) * (w // ref)
         n_cur = (h // self.block_size) * (w // self.block_size)
+        eps = 1e-12
         if n_cur == 0 or n_ref == 0:
+            print("[FrequencyTagger] Warning: zero block count encountered, skip scaling.")
             return self.beta
-        return self.beta * math.sqrt(n_ref / n_cur)
+        scaled = self.beta * math.sqrt(max(n_ref, eps) / max(n_cur, eps))
+        if scaled < 1e-6 or scaled > 1e3:
+            print(
+                f"[FrequencyTagger] Warning: scaled beta ({scaled:.4e}) is extreme; "
+                "please check block_size and image size."
+            )
+        return scaled
 
     def apply(self, img: torch.Tensor) -> torch.Tensor:
         """对单张 [0,1] 图像施加频域标记，返回裁剪到 [0,1] 的张量。"""
         assert img.dim() == 3 and img.shape[0] == 3, "img 需要形状 (3,H,W)"
+        img = torch.clamp(img, 0.0, 1.0)
         h, w = img.shape[1:]
         beta_scaled = self._scaled_beta(h, w)
 
         y, u_ch, v_ch = rgb_to_yuv(img)
-
+        y = y.to(img.device)
+        u_ch = u_ch.to(img.device)
+        v_ch = v_ch.to(img.device)
         coeffs = block_dct(y, block_size=self.block_size)[0]  # (hb, wb, bs, bs)
         hb, wb = coeffs.shape[:2]
         flat = coeffs.contiguous().view(hb * wb, self.block_size * self.block_size)
@@ -370,7 +396,8 @@ class FrequencyTagger:
         y_rec = block_idct(coeffs_new.unsqueeze(0), self.block_size, h, w)[0]
         y_rec = torch.clamp(y_rec, 0.0, 255.0)
         rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
-        return torch.clamp(rgb.to(torch.float32), 0.0, 1.0)
+        return torch.clamp(rgb.to(img.device).to(torch.float32), 0.0, 1.0)
+
 
 
 # ---------------------------------------------------------------------------
