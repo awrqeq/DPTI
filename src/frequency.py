@@ -26,7 +26,6 @@ from tqdm import tqdm
 
 _DCT_CACHE: dict[tuple[int, str], torch.Tensor] = {}
 
-
 def _cache_key(block_size: int, device: torch.device) -> tuple[int, str]:
     device = torch.device(device)
     return block_size, f"{device.type}:{device.index if device.index is not None else -1}"
@@ -119,6 +118,8 @@ def _legacy_cifar4_mask() -> List[Tuple[int, int]]:
     )
     return list(map(tuple, np.argwhere(mask > 0)))
 
+def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
+    """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
 
 def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
     """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
@@ -126,6 +127,7 @@ def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> t
     mask_sorted = sorted(mask, key=lambda p: (p[0], p[1]))
     mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
     for u, v in mask_sorted:
+
         mask_tensor[u, v] = True
     flat = mask_tensor.view(-1)
     # 使用顺序索引可保证 row-major 顺序稳定
@@ -226,6 +228,7 @@ def collect_mid_vectors(
                 flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
                 vectors = flat[:, flat_indices]
                 vectors = vectors.to(device=device, dtype=torch.float64)
+
                 collected.append(vectors.cpu())
                 pbar.update(vectors.size(0))
                 if sum(v.shape[0] for v in collected) >= max_blocks:
@@ -396,6 +399,7 @@ class FrequencyTagger:
         y_rec = torch.clamp(y_rec, 0.0, 255.0)
         rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
         return torch.clamp(rgb.to(img.device).to(torch.float32), 0.0, 1.0)
+
 
 
 # ---------------------------------------------------------------------------
