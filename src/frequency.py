@@ -162,7 +162,7 @@ class FrequencyStats:
     w: np.ndarray
     block_size: int
     dataset_name: str
-    use_smallest_eigvec_only: bool = True
+    use_smallest_eigvec_only: bool = False
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -249,7 +249,7 @@ def build_pca_trigger(
     seed: int = 42,
     block_size: int = 4,
     dataset_name: str = "cifar10",
-    use_smallest_eigvec_only: bool = True,
+    use_smallest_eigvec_only: bool = False,
 ) -> FrequencyStats:
     """从中频向量中计算 PCA 尾子空间方向。"""
     rng = np.random.default_rng(seed)
@@ -289,6 +289,7 @@ class FrequencyParams:
     match_global_energy: bool = True
     base_block_size_for_energy: int = 4
     lambda_align: float = 1.0
+    channel_mode: str = "Y"
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +369,13 @@ class FrequencyTagger:
         if lambda_align is None:
             lambda_align = getattr(params, "lambda_align", 1.0)
         self.lambda_align = float(lambda_align)
+        channel_mode = getattr(params, "channel_mode", "Y")
+        channel_mode = str(channel_mode).upper()
+        if channel_mode not in {"Y", "UV", "YUV"}:
+            raise ValueError(
+                f"Unsupported channel_mode={channel_mode}. Expected one of 'Y', 'UV', 'YUV'."
+            )
+        self.channel_mode = channel_mode
 
     def _scaled_beta(self, h: int, w: int) -> float:
         if not self.params.match_global_energy:
@@ -386,6 +394,26 @@ class FrequencyTagger:
                 "please check block_size and image size."
             )
         return scaled
+
+    def _apply_alignment_to_channel(self, channel: torch.Tensor, beta_scaled: float) -> torch.Tensor:
+        coeffs = block_dct(channel, self.block_size)[0]
+
+        hb, wb = coeffs.shape[:2]
+        flat = coeffs.reshape(hb * wb, self.block_size * self.block_size).clone()
+
+        mask_flat = self.mask_flat.to(flat.device)
+        vectors = flat[:, mask_flat]
+
+        w_vec = self.w.to(vectors.device)
+        proj = (vectors * w_vec).sum(dim=1, keepdim=True)
+        deltas = self.lambda_align * (beta_scaled - proj) * w_vec.unsqueeze(0)
+
+        vectors_new = vectors + deltas
+        flat[:, mask_flat] = vectors_new
+
+        coeffs_new = flat.view(hb, wb, self.block_size, self.block_size)
+        channel_rec = block_idct(coeffs_new.unsqueeze(0), self.block_size, channel.shape[0], channel.shape[1])[0]
+        return torch.clamp(channel_rec, 0.0, 255.0)
 
     def apply(self, img: torch.Tensor) -> torch.Tensor:
         """
@@ -413,39 +441,24 @@ class FrequencyTagger:
         beta_scaled = self._scaled_beta(h, w)
 
         # ----------------------------------------------------------
-        # 分块 DCT
+        # 选择性地对不同通道施加频域增强
         # ----------------------------------------------------------
-        coeffs = block_dct(y, self.block_size)[0]  # (hb, wb, bs, bs)
-
-        hb, wb = coeffs.shape[:2]
-        flat = coeffs.reshape(hb * wb, self.block_size * self.block_size).clone()
-
-        mask_flat = self.mask_flat.to(flat.device)
-        vectors = flat[:, mask_flat]
-
-        w_vec = self.w.to(vectors.device)
-
-        # ----------------------------------------------------------
-        # 注入 PCA 尾方向
-        # ----------------------------------------------------------
-        proj = (vectors * w_vec).sum(dim=1, keepdim=True)
-        deltas = self.lambda_align * (beta_scaled - proj) * w_vec.unsqueeze(0)
-
-        vectors_new = vectors + deltas
-        flat[:, mask_flat] = vectors_new
-
-        coeffs_new = flat.view(hb, wb, self.block_size, self.block_size)
-
-        # ----------------------------------------------------------
-        # 反 DCT
-        # ----------------------------------------------------------
-        y_rec = block_idct(coeffs_new.unsqueeze(0), self.block_size, h, w)[0]
-        y_rec = torch.clamp(y_rec, 0.0, 255.0)
+        if self.channel_mode == "Y":
+            y_rec = self._apply_alignment_to_channel(y, beta_scaled)
+            u_rec, v_rec = u_ch, v_ch
+        elif self.channel_mode == "UV":
+            y_rec = y
+            u_rec = self._apply_alignment_to_channel(u_ch, beta_scaled)
+            v_rec = self._apply_alignment_to_channel(v_ch, beta_scaled)
+        else:  # "YUV"
+            y_rec = self._apply_alignment_to_channel(y, beta_scaled)
+            u_rec = self._apply_alignment_to_channel(u_ch, beta_scaled)
+            v_rec = self._apply_alignment_to_channel(v_ch, beta_scaled)
 
         # ----------------------------------------------------------
         # 还原 RGB
         # ----------------------------------------------------------
-        rgb = yuv_to_rgb(y_rec, u_ch, v_ch) / 255.0
+        rgb = yuv_to_rgb(y_rec, u_rec, v_rec) / 255.0
         rgb = torch.clamp(rgb, 0.0, 1.0)
 
         # 返回完全独立的新张量

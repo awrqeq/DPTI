@@ -109,7 +109,8 @@ def main():
     beta = float(cfg["data"]["beta"])
     freq_cfg = cfg.get("frequency", {})
     lambda_align = float(freq_cfg.get("lambda_align", 1.0))
-    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", True))
+    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
+    channel_mode = freq_cfg.get("channel_mode", "Y")
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
     mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
@@ -132,6 +133,7 @@ def main():
         match_global_energy=True,
         base_block_size_for_energy=4,
         lambda_align=lambda_align,
+        channel_mode=channel_mode,
     )
     tagger = FrequencyTagger(freq_params, beta=beta, lambda_align=lambda_align)
 

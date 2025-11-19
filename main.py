@@ -65,7 +65,8 @@ def main():
 
     freq_cfg = cfg.get("frequency", {})
     lambda_align = float(freq_cfg.get("lambda_align", 1.0))
-    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", True))
+    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
+    channel_mode = freq_cfg.get("channel_mode", "Y")
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -123,6 +124,7 @@ def main():
         match_global_energy=True,
         base_block_size_for_energy=4,
         lambda_align=lambda_align,
+        channel_mode=channel_mode,
     )
 
     # ------------------------------
