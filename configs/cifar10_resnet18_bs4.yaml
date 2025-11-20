@@ -20,7 +20,7 @@ model:
 
 pca:
   k_tail: 4
-  save_path: ./artifacts/freq_stats_cifar4.pkl
+  save_path: ./artifacts
 
 train:
   epochs: 200
@@ -35,6 +35,7 @@ train:
 frequency:
   lambda_align: 0.7
   use_smallest_eigvec_only: true
+  channel_mode: Y
 
 log:
   ckpt_dir: ./checkpoints

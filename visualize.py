@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from matplotlib import gridspec
 
-from src.config import ensure_dir, load_config
+from src.config import ensure_dir, load_config, resolve_pca_stats_path
 from src.data import _load_dataset, build_pca_loader
 from src.frequency import (
     FrequencyParams,
@@ -51,14 +51,16 @@ def _load_or_build_stats(
     dataset_name,
     device,
     use_smallest_eigvec_only: bool,
+    channel_mode: str,
+    model_name: str | None,
+    pca_path: Path,
 ) -> FrequencyStats:
-    pca_path = Path(cfg["pca"]["save_path"])
     ensure_dir(pca_path.parent)
     if pca_path.exists():
         print(f"Loading PCA stats from {pca_path}")
         return FrequencyStats.load(pca_path)
 
-    print("Building PCA stats for visualization...")
+    print(f"Saving PCA stats to: {pca_path.name}")
     base_loader = build_pca_loader(cfg)
     vectors = collect_mid_vectors(
         base_loader,
@@ -76,6 +78,7 @@ def _load_or_build_stats(
         use_smallest_eigvec_only=use_smallest_eigvec_only,
     )
     stats.save(pca_path)
+    print(f"Saved PCA stats to {pca_path}")
     return stats
 
 
@@ -109,12 +112,23 @@ def main():
     beta = float(cfg["data"]["beta"])
     freq_cfg = cfg.get("frequency", {})
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
-    channel_mode = freq_cfg.get("channel_mode", "Y")
+    if "channel_mode" not in freq_cfg:
+        raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
+    channel_mode = str(freq_cfg["channel_mode"]).upper()
+    model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
     mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
 
     print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
+
+    pca_path = resolve_pca_stats_path(
+        cfg,
+        dataset_name=dataset_name,
+        block_size=block_size,
+        channel_mode=channel_mode,
+        model_name=model_name,
+    )
 
     stats = _load_or_build_stats(
         cfg,
@@ -123,6 +137,9 @@ def main():
         dataset_name,
         device,
         use_smallest_eigvec_only=use_smallest_eigvec_only,
+        channel_mode=channel_mode,
+        model_name=model_name,
+        pca_path=pca_path,
     )
     freq_params = FrequencyParams(
         stats=stats,
@@ -143,7 +160,7 @@ def main():
     grid = gridspec.GridSpec(num_samples, 3, figure=fig, wspace=0.05, hspace=0.35)
 
     fig.suptitle(
-        f"Dataset={dataset_name}, Block={block_size}, Beta={beta}, PCA={cfg['pca']['save_path']}",
+        f"Dataset={dataset_name}, Block={block_size}, Beta={beta}, PCA={pca_path.name}",
         fontsize=12,
     )
 
