@@ -182,6 +182,161 @@ def _standard_train_epoch(
     return epoch_loss, epoch_acc
 
 
+class Trainer:
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        clean_train_loader,
+        marked_train_loader,  # 目前不在训练 loop 中使用，只是为了兼容接口
+        clean_test_loader,
+        marked_test_loader,
+        target_class: int,
+        optimizer: optim.Optimizer,
+        device: torch.device,
+        epochs: int,
+        scheduler: Optional[LRScheduler] = None,
+        use_amp: bool = True,
+        exp_dir: str | None = None,
+        dataset_name: str | None = None,
+        model_name: str | None = None,
+    ):
+        self.model = model
+        self.clean_train_loader = clean_train_loader
+        self.marked_train_loader = marked_train_loader
+        self.clean_test_loader = clean_test_loader
+        self.marked_test_loader = marked_test_loader
+        self.target_class = target_class
+        self.optimizer = optimizer
+        self.device = device
+        self.epochs = epochs
+        self.scheduler = scheduler
+        self.use_amp = use_amp
+        self.exp_dir = exp_dir
+        self.dataset_name = dataset_name
+        self.model_name = model_name
+
+        self.criterion = nn.CrossEntropyLoss()
+        self.scaler = (
+            torch.cuda.amp.GradScaler()
+            if (self.use_amp and self.device.type == "cuda")
+            else None
+        )
+
+        self.log_f = None
+        if self.exp_dir is not None:
+            os.makedirs(self.exp_dir, exist_ok=True)
+            self.log_f = open(os.path.join(self.exp_dir, "train.log"), "a")
+
+        self.best_clean_asr995 = -1
+        self.best_clean_asr100 = -1
+        self.best_asr995_path = None
+        self.best_asr100_path = None
+
+    def _log(self, message: str):
+        if self.log_f is not None:
+            self.log_f.write(message)
+            self.log_f.flush()
+
+    def train_and_evaluate(self):
+        for epoch in range(1, self.epochs + 1):
+            train_loss, train_acc = _standard_train_epoch(
+                model=self.model,
+                loader=self.clean_train_loader,
+                criterion=self.criterion,
+                optimizer=self.optimizer,
+                device=self.device,
+                epoch=epoch,
+                epochs=self.epochs,
+                scaler=self.scaler,
+            )
+
+            clean_loss, clean_acc = evaluate(self.model, self.clean_test_loader, self.device)
+
+            (
+                marked_rate,
+                marked_count,
+                marked_total,
+            ) = evaluate_marked_target_rate(
+                self.model,
+                self.marked_test_loader,
+                target_class=self.target_class,
+                device=self.device,
+            )
+            marked_rate_pct = marked_rate * 100.0
+
+            if self.scheduler is not None:
+                self.scheduler.step()
+                current_lr = self.scheduler.get_last_lr()[0]
+            else:
+                current_lr = self.optimizer.param_groups[0]["lr"]
+
+            print(
+                f"Epoch {epoch}/{self.epochs} | "
+                f"lr={current_lr:.5f} | "
+                f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f} | "
+                f"clean_loss={clean_loss:.4f}, clean_acc={clean_acc:.4f} | "
+                f"marked_target_rate={marked_rate_pct:.4f}% ({marked_count}/{marked_total})"
+            )
+
+            self._log(
+                f"[Epoch {epoch}] clean_acc={clean_acc:.4f}, asr={marked_rate:.4f}, train_acc={train_acc:.4f}\n"
+            )
+
+            if self.exp_dir is not None and self.dataset_name and self.model_name:
+                if marked_rate >= 0.995 and clean_acc > self.best_clean_asr995:
+                    self.best_clean_asr995 = clean_acc
+
+                    if self.best_asr995_path and os.path.exists(self.best_asr995_path):
+                        os.remove(self.best_asr995_path)
+
+                    final_path = os.path.join(self.exp_dir, "best_asr995_clean.pth")
+                    torch.save(self.model.state_dict(), final_path)
+
+                    filename = (
+                        f"{self.dataset_name}_{self.model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
+                    )
+                    save_path = os.path.join(self.exp_dir, filename)
+                    shutil.copy(final_path, save_path)
+
+                    self.best_asr995_path = save_path
+
+                if marked_rate == 1.0 and clean_acc > self.best_clean_asr100:
+                    self.best_clean_asr100 = clean_acc
+
+                    if self.best_asr100_path and os.path.exists(self.best_asr100_path):
+                        os.remove(self.best_asr100_path)
+
+                    final_path = os.path.join(self.exp_dir, "best_asr100_clean.pth")
+                    torch.save(self.model.state_dict(), final_path)
+
+                    filename = (
+                        f"{self.dataset_name}_{self.model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
+                    )
+                    save_path = os.path.join(self.exp_dir, filename)
+                    shutil.copy(final_path, save_path)
+
+                    self.best_asr100_path = save_path
+
+        if self.log_f is not None:
+            summary_lines = ["\n===== Best Model Summary =====\n"]
+            if self.best_asr995_path is not None:
+                summary_lines.append(
+                    f"ASR>=99.5 best clean_acc={self.best_clean_asr995:.4f} saved at {self.best_asr995_path}"
+                )
+            else:
+                summary_lines.append("No checkpoint reached ASR>=99.5%.")
+
+            if self.best_asr100_path is not None:
+                summary_lines.append(
+                    f"ASR=100% best clean_acc={self.best_clean_asr100:.4f} saved at {self.best_asr100_path}"
+                )
+            else:
+                summary_lines.append("No checkpoint reached ASR=100%.")
+
+            self.log_f.write("\n".join(summary_lines) + "\n")
+            self.log_f.close()
+
+
 def train_and_evaluate(
     model: torch.nn.Module,
     clean_train_loader,
@@ -198,109 +353,20 @@ def train_and_evaluate(
     dataset_name: str | None = None,
     model_name: str | None = None,
 ):
-    """
-    训练与评估主循环。
-
-    - 训练：
-        * 只使用 clean_train_loader（实际上是「干净 + 频域增强」混合后的 poisoned train）
-        * 支持 AMP
-        * 支持可选的 LR scheduler（如 Cosine）
-
-    - 评估：
-        * clean_test_loader 上评估标准分类性能 (clean_loss, clean_acc)
-        * marked_test_loader 上统计“频域标记样本被预测为 target_class 的比例”（marked_target_rate）
-    """
-
-    criterion = nn.CrossEntropyLoss()
-    scaler = torch.cuda.amp.GradScaler() if (use_amp and device.type == "cuda") else None
-
-    log_f = None
-    best_clean_asr995 = -1.0
-    best_clean_asr100 = -1.0
-    best_path_asr995 = None
-    best_path_asr100 = None
-
-    if exp_dir is not None:
-        os.makedirs(exp_dir, exist_ok=True)
-        log_f = open(os.path.join(exp_dir, "train.log"), "a")
-
-    for epoch in range(1, epochs + 1):
-        # 标准训练一个 epoch
-        train_loss, train_acc = _standard_train_epoch(
-            model=model,
-            loader=clean_train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            device=device,
-            epoch=epoch,
-            epochs=epochs,
-            scaler=scaler,
-        )
-
-        # 干净测试集表现
-        clean_loss, clean_acc = evaluate(model, clean_test_loader, device)
-
-        # 频域标记测试集：统计预测为 target_class 的比例
-        marked_rate, marked_count, marked_total = evaluate_marked_target_rate(
-            model, marked_test_loader, target_class=target_class, device=device
-        )
-        marked_rate_pct = marked_rate * 100.0
-
-        # 如果有 scheduler，这里 step 一下，并记录当前 lr
-        if scheduler is not None:
-            scheduler.step()
-            current_lr = scheduler.get_last_lr()[0]
-        else:
-            current_lr = optimizer.param_groups[0]["lr"]
-
-        print(
-            f"Epoch {epoch}/{epochs} | "
-            f"lr={current_lr:.5f} | "
-            f"train_loss={train_loss:.4f}, train_acc={train_acc:.4f} | "
-            f"clean_loss={clean_loss:.4f}, clean_acc={clean_acc:.4f} | "
-            f"marked_target_rate={marked_rate_pct:.4f}% ({marked_count}/{marked_total})"
-        )
-
-        if log_f is not None:
-            log_f.write(
-                f"[Epoch {epoch}] clean_acc={clean_acc:.4f}, asr={marked_rate:.4f}, train_acc={train_acc:.4f}\n"
-            )
-            log_f.flush()
-
-        if exp_dir is not None and dataset_name and model_name:
-            if marked_rate >= 0.995 and clean_acc > best_clean_asr995:
-                best_clean_asr995 = clean_acc
-                filename = f"{dataset_name}_{model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
-                save_path = os.path.join(exp_dir, filename)
-                torch.save(model.state_dict(), save_path)
-                alias_path = os.path.join(exp_dir, "best_asr995_clean.pth")
-                shutil.copyfile(save_path, alias_path)
-                best_path_asr995 = save_path
-
-            if marked_rate == 1.0 and clean_acc > best_clean_asr100:
-                best_clean_asr100 = clean_acc
-                filename = f"{dataset_name}_{model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
-                save_path = os.path.join(exp_dir, filename)
-                torch.save(model.state_dict(), save_path)
-                alias_path = os.path.join(exp_dir, "best_asr100_clean.pth")
-                shutil.copyfile(save_path, alias_path)
-                best_path_asr100 = save_path
-
-    if log_f is not None:
-        summary_lines = ["\n===== Best Model Summary =====\n"]
-        if best_path_asr995 is not None:
-            summary_lines.append(
-                f"ASR>=99.5 best clean_acc={best_clean_asr995:.4f} saved at {best_path_asr995}"
-            )
-        else:
-            summary_lines.append("No checkpoint reached ASR>=99.5%.")
-
-        if best_path_asr100 is not None:
-            summary_lines.append(
-                f"ASR=100% best clean_acc={best_clean_asr100:.4f} saved at {best_path_asr100}"
-            )
-        else:
-            summary_lines.append("No checkpoint reached ASR=100%.")
-
-        log_f.write("\n".join(summary_lines) + "\n")
-        log_f.close()
+    trainer = Trainer(
+        model=model,
+        clean_train_loader=clean_train_loader,
+        marked_train_loader=marked_train_loader,
+        clean_test_loader=clean_test_loader,
+        marked_test_loader=marked_test_loader,
+        target_class=target_class,
+        optimizer=optimizer,
+        device=device,
+        epochs=epochs,
+        scheduler=scheduler,
+        use_amp=use_amp,
+        exp_dir=exp_dir,
+        dataset_name=dataset_name,
+        model_name=model_name,
+    )
+    trainer.train_and_evaluate()
