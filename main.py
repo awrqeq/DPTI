@@ -11,14 +11,13 @@ import argparse
 import os
 import random
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
 import yaml
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from src.config import ensure_dir, load_config
+from src.config import ensure_dir, load_config, resolve_pca_stats_path
 from src.data import build_dataloaders, build_datasets, build_pca_loader
 from src.frequency import (
     FrequencyParams,
@@ -68,7 +67,9 @@ def main():
 
     freq_cfg = cfg.get("frequency", {})
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
-    channel_mode = freq_cfg.get("channel_mode", "Y")
+    if "channel_mode" not in freq_cfg:
+        raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
+    channel_mode = str(freq_cfg["channel_mode"]).upper()
 
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
@@ -97,7 +98,13 @@ def main():
         mask = get_mid_freq_indices(dataset_name, block_size)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
-    pca_path = Path(cfg["pca"]["save_path"])
+    pca_path = resolve_pca_stats_path(
+        cfg,
+        dataset_name=dataset_name,
+        block_size=block_size,
+        channel_mode=channel_mode,
+        model_name=model_name,
+    )
     ensure_dir(pca_path.parent)
 
     # ------------------------------
@@ -107,26 +114,9 @@ def main():
         stats = FrequencyStats.load(pca_path)
         print(f"Loaded frequency stats from {pca_path}")
     else:
-        print("Building frequency statistics...")
-
-        base_loader = build_pca_loader(cfg)
-        vectors = collect_mid_vectors(
-            base_loader,
-            mask=mask,
-            block_size=block_size,
-            max_blocks=cfg["data"]["pca_sample_blocks"],
-            device=device,
+        raise FileNotFoundError(
+            f"Stats {pca_path} not found. Have you run pca_stats.py with channel_mode={channel_mode}?"
         )
-        stats = build_pca_trigger(
-            vectors,
-            k_tail=cfg["pca"]["k_tail"],
-            seed=cfg["experiment"]["seed"],
-            block_size=block_size,
-            dataset_name=dataset_name,
-            use_smallest_eigvec_only=use_smallest_eigvec_only,
-        )
-        stats.save(pca_path)
-        print(f"Saved frequency stats to {pca_path}")
 
     freq_params = FrequencyParams(
         stats=stats,

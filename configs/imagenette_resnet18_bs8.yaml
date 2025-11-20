@@ -22,7 +22,7 @@ model:
 
 pca:
   k_tail: 4
-  save_path: ./artifacts/freq_stats_imagenette8.pkl
+  save_path: ./artifacts
 
 train:
   epochs: 120
@@ -33,6 +33,11 @@ train:
   scheduler: cosine
   eta_min: 0.0001
   amp: true
+
+frequency:
+  lambda_align: 0.7
+  use_smallest_eigvec_only: true
+  channel_mode: Y
 
 log:
   ckpt_dir: ./checkpoints
