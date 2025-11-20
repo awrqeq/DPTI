@@ -5,7 +5,6 @@ from __future__ import annotations
 - 统一的块状 DCT/IDCT 实现，可按 block_size 参数化。
 - 数据集感知的中频掩码生成，兼容原有 CIFAR-10 4x4 行为。
 - PCA 尾子空间方向构建，并通过 FrequencyTagger 注入频域标记。
-- 自动全局能量匹配（跨 block_size 维持近似一致的图像级 L2/PSNR）。
 - 可同时用于训练（离线/在线标记）与可视化脚本。
 """
 
@@ -286,9 +285,6 @@ class FrequencyParams:
     mask: Sequence[Tuple[int, int]]
     block_size: int
     dataset_name: str
-    match_global_energy: bool = True
-    base_block_size_for_energy: int = 4
-    lambda_align: float = 1.0
     channel_mode: str = "Y"
 
 
@@ -349,7 +345,7 @@ class FrequencyTagger:
     """
     基于 PCA 尾方向的频域标记器。
 
-    - 支持 block_size 4/8，自动匹配全局能量（参考 base_block_size_for_energy）。
+    - 支持 block_size 4/8。
     - 针对不同数据集的 mask 及统计量可复用。
     """
 
@@ -357,7 +353,6 @@ class FrequencyTagger:
         self,
         params: FrequencyParams,
         beta: float,
-        lambda_align: float | None = None,
     ):
         self.params = params
         self.beta = float(beta)
@@ -366,9 +361,6 @@ class FrequencyTagger:
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
         self.mask_flat = _mask_to_flat_indices(self.mask_indices, self.block_size)
-        if lambda_align is None:
-            lambda_align = getattr(params, "lambda_align", 1.0)
-        self.lambda_align = float(lambda_align)
         channel_mode = getattr(params, "channel_mode", "Y")
         channel_mode = str(channel_mode).upper()
         if channel_mode not in {"Y", "UV", "YUV"}:
@@ -378,22 +370,7 @@ class FrequencyTagger:
         self.channel_mode = channel_mode
 
     def _scaled_beta(self, h: int, w: int) -> float:
-        if not self.params.match_global_energy:
-            return self.beta
-        ref = self.params.base_block_size_for_energy
-        n_ref = (h // ref) * (w // ref)
-        n_cur = (h // self.block_size) * (w // self.block_size)
-        eps = 1e-12
-        if n_cur == 0 or n_ref == 0:
-            print("[FrequencyTagger] Warning: zero block count encountered, skip scaling.")
-            return self.beta
-        scaled = self.beta * math.sqrt(max(n_ref, eps) / max(n_cur, eps))
-        if scaled < 1e-6 or scaled > 1e3:
-            print(
-                f"[FrequencyTagger] Warning: scaled beta ({scaled:.4e}) is extreme; "
-                "please check block_size and image size."
-            )
-        return scaled
+        return self.beta
 
     def _apply_alignment_to_channel(self, channel: torch.Tensor, beta_scaled: float) -> torch.Tensor:
         coeffs = block_dct(channel, self.block_size)[0]
@@ -406,7 +383,7 @@ class FrequencyTagger:
 
         w_vec = self.w.to(vectors.device)
         proj = (vectors * w_vec).sum(dim=1, keepdim=True)
-        deltas = self.lambda_align * (beta_scaled - proj) * w_vec.unsqueeze(0)
+        deltas = (beta_scaled - proj) * w_vec.unsqueeze(0)
 
         vectors_new = vectors + deltas
         flat[:, mask_flat] = vectors_new
@@ -482,7 +459,7 @@ def apply_frequency_mark(
     传入已有 tagger 可避免重复构造（DCT 矩阵已按设备缓存）。
     """
 
-    tagger = tagger or FrequencyTagger(params, beta=beta, lambda_align=params.lambda_align)
+    tagger = tagger or FrequencyTagger(params, beta=beta)
     return tagger.apply(image)
 
 

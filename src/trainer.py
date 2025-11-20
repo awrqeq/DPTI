@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 from typing import Tuple, Iterable, Optional
 
 import torch
@@ -192,6 +194,9 @@ def train_and_evaluate(
     epochs: int,
     scheduler: Optional[LRScheduler] = None,
     use_amp: bool = True,
+    exp_dir: str | None = None,
+    dataset_name: str | None = None,
+    model_name: str | None = None,
 ):
     """
     训练与评估主循环。
@@ -208,6 +213,16 @@ def train_and_evaluate(
 
     criterion = nn.CrossEntropyLoss()
     scaler = torch.cuda.amp.GradScaler() if (use_amp and device.type == "cuda") else None
+
+    log_f = None
+    best_clean_asr995 = -1.0
+    best_clean_asr100 = -1.0
+    best_path_asr995 = None
+    best_path_asr100 = None
+
+    if exp_dir is not None:
+        os.makedirs(exp_dir, exist_ok=True)
+        log_f = open(os.path.join(exp_dir, "train.log"), "a")
 
     for epoch in range(1, epochs + 1):
         # 标准训练一个 epoch
@@ -245,3 +260,47 @@ def train_and_evaluate(
             f"clean_loss={clean_loss:.4f}, clean_acc={clean_acc:.4f} | "
             f"marked_target_rate={marked_rate_pct:.4f}% ({marked_count}/{marked_total})"
         )
+
+        if log_f is not None:
+            log_f.write(
+                f"[Epoch {epoch}] clean_acc={clean_acc:.4f}, asr={marked_rate:.4f}, train_acc={train_acc:.4f}\n"
+            )
+            log_f.flush()
+
+        if exp_dir is not None and dataset_name and model_name:
+            if marked_rate >= 0.995 and clean_acc > best_clean_asr995:
+                best_clean_asr995 = clean_acc
+                filename = f"{dataset_name}_{model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
+                save_path = os.path.join(exp_dir, filename)
+                torch.save(model.state_dict(), save_path)
+                alias_path = os.path.join(exp_dir, "best_asr995_clean.pth")
+                shutil.copyfile(save_path, alias_path)
+                best_path_asr995 = save_path
+
+            if marked_rate == 1.0 and clean_acc > best_clean_asr100:
+                best_clean_asr100 = clean_acc
+                filename = f"{dataset_name}_{model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
+                save_path = os.path.join(exp_dir, filename)
+                torch.save(model.state_dict(), save_path)
+                alias_path = os.path.join(exp_dir, "best_asr100_clean.pth")
+                shutil.copyfile(save_path, alias_path)
+                best_path_asr100 = save_path
+
+    if log_f is not None:
+        summary_lines = ["\n===== Best Model Summary =====\n"]
+        if best_path_asr995 is not None:
+            summary_lines.append(
+                f"ASR>=99.5 best clean_acc={best_clean_asr995:.4f} saved at {best_path_asr995}"
+            )
+        else:
+            summary_lines.append("No checkpoint reached ASR>=99.5%.")
+
+        if best_path_asr100 is not None:
+            summary_lines.append(
+                f"ASR=100% best clean_acc={best_clean_asr100:.4f} saved at {best_path_asr100}"
+            )
+        else:
+            summary_lines.append("No checkpoint reached ASR=100%.")
+
+        log_f.write("\n".join(summary_lines) + "\n")
+        log_f.close()
