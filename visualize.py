@@ -108,7 +108,6 @@ def main():
     block_size = int(cfg["data"].get("block_size", 4))
     beta = float(cfg["data"]["beta"])
     freq_cfg = cfg.get("frequency", {})
-    lambda_align = float(freq_cfg.get("lambda_align", 1.0))
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
     channel_mode = freq_cfg.get("channel_mode", "Y")
 
@@ -130,12 +129,9 @@ def main():
         mask=mask,
         block_size=block_size,
         dataset_name=dataset_name,
-        match_global_energy=True,
-        base_block_size_for_energy=4,
-        lambda_align=lambda_align,
         channel_mode=channel_mode,
     )
-    tagger = FrequencyTagger(freq_params, beta=beta, lambda_align=lambda_align)
+    tagger = FrequencyTagger(freq_params, beta=beta)
 
     train_images, train_labels, _, _, _ = _load_dataset(cfg)
     num_samples = min(args.num_samples, train_images.shape[0])

@@ -8,11 +8,14 @@ from __future__ import annotations
 """
 
 import argparse
+import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.config import ensure_dir, load_config
@@ -64,7 +67,6 @@ def main():
     print(f"Using device: {device}")
 
     freq_cfg = cfg.get("frequency", {})
-    lambda_align = float(freq_cfg.get("lambda_align", 1.0))
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
     channel_mode = freq_cfg.get("channel_mode", "Y")
 
@@ -74,6 +76,16 @@ def main():
 
     dataset_name = cfg["data"]["name"].lower()
     block_size = int(cfg["data"].get("block_size", 4))
+    model_name = cfg["model"].get("name", "resnet18").lower()
+
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    exp_root = "experiments"
+    exp_name = f"{dataset_name}_{model_name}_{timestamp}"
+    exp_dir = os.path.join(exp_root, exp_name)
+    os.makedirs(exp_dir, exist_ok=True)
+
+    with open(os.path.join(exp_dir, "config.yaml"), "w") as f:
+        yaml.dump(cfg, f)
 
     # ------------------------------
     # 2. 频域掩码 & PCA 统计路径
@@ -121,9 +133,6 @@ def main():
         mask=mask,
         block_size=block_size,
         dataset_name=dataset_name,
-        match_global_energy=True,
-        base_block_size_for_energy=4,
-        lambda_align=lambda_align,
         channel_mode=channel_mode,
     )
 
@@ -141,7 +150,6 @@ def main():
     # ------------------------------
     # 5. 构建模型（支持 resnet18 / densenet121）
     # ------------------------------
-    model_name = cfg["model"].get("name", "resnet18").lower()
     num_classes = int(cfg["model"].get("num_classes", 10))
     img_size = int(cfg["data"].get("img_size", 32))
 
@@ -198,6 +206,9 @@ def main():
         epochs=epochs,
         scheduler=scheduler,
         use_amp=bool(train_cfg.get("amp", True)),
+        exp_dir=exp_dir,
+        dataset_name=dataset_name,
+        model_name=model_name,
     )
 
 
