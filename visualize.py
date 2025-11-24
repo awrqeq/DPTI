@@ -186,20 +186,25 @@ def main():
         residual_vis = torch.clamp(raw_residual.abs() * args.scale, 0.0, 1.0)
         residual_vis = residual_vis.mean(dim=0).detach().cpu().numpy()
 
-        metrics_text = (
+        orig_metrics = "Reference image (no perturbation)"
+        tagged_metrics = (
             f"PSNR={psnr:.2f} | L2={l2:.4f} | mean|res|={mean_abs:.4f}\n"
             f"eff_beta={eff_beta:.4f} | block={block_size}"
+        )
+        residual_metrics = (
+            f"L2={l2:.4f} | mean|res|={mean_abs:.4f}\n"
+            f"scale={args.scale:.2f}"
         )
 
         # ---------- 三列可视化 ----------
         ax_orig = fig.add_subplot(grid[idx, 0])
-        _prepare_subplot(ax_orig, img_vis, "Original", metrics_text)
+        _prepare_subplot(ax_orig, img_vis, "Original", orig_metrics)
 
         ax_tag = fig.add_subplot(grid[idx, 1])
-        _prepare_subplot(ax_tag, tagged_vis, "Tagged", metrics_text)
+        _prepare_subplot(ax_tag, tagged_vis, "Tagged", tagged_metrics)
 
         ax_res = fig.add_subplot(grid[idx, 2])
-        _prepare_subplot(ax_res, residual_vis, "Residual (abs*scale)", metrics_text, cmap="gray")
+        _prepare_subplot(ax_res, residual_vis, "Residual (abs*scale)", residual_metrics, cmap="gray")
 
     summary_path = output_dir / "summary.png"
     fig.tight_layout(rect=[0, 0, 1, 0.97])

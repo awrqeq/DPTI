@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from typing import Tuple, Iterable, Optional
 
 import torch
@@ -229,8 +228,12 @@ class Trainer:
 
         self.best_clean_asr995 = -1
         self.best_clean_asr100 = -1
-        self.best_asr995_path = None
-        self.best_asr100_path = None
+        self.best_asr995_path = (
+            os.path.join(self.exp_dir, "best_asr995_clean.pth") if self.exp_dir else None
+        )
+        self.best_asr100_path = (
+            os.path.join(self.exp_dir, "best_asr100_clean.pth") if self.exp_dir else None
+        )
 
     def _log(self, message: str):
         if self.log_f is not None:
@@ -286,47 +289,25 @@ class Trainer:
                 if marked_rate >= 0.995 and clean_acc > self.best_clean_asr995:
                     self.best_clean_asr995 = clean_acc
 
-                    if self.best_asr995_path and os.path.exists(self.best_asr995_path):
-                        os.remove(self.best_asr995_path)
-
-                    final_path = os.path.join(self.exp_dir, "best_asr995_clean.pth")
-                    torch.save(self.model.state_dict(), final_path)
-
-                    filename = (
-                        f"{self.dataset_name}_{self.model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
-                    )
-                    save_path = os.path.join(self.exp_dir, filename)
-                    shutil.copy(final_path, save_path)
-
-                    self.best_asr995_path = save_path
+                    if self.best_asr995_path:
+                        torch.save(self.model.state_dict(), self.best_asr995_path)
 
                 if marked_rate == 1.0 and clean_acc > self.best_clean_asr100:
                     self.best_clean_asr100 = clean_acc
 
-                    if self.best_asr100_path and os.path.exists(self.best_asr100_path):
-                        os.remove(self.best_asr100_path)
-
-                    final_path = os.path.join(self.exp_dir, "best_asr100_clean.pth")
-                    torch.save(self.model.state_dict(), final_path)
-
-                    filename = (
-                        f"{self.dataset_name}_{self.model_name}_asr{marked_rate:.3f}_ba{clean_acc:.3f}.pth"
-                    )
-                    save_path = os.path.join(self.exp_dir, filename)
-                    shutil.copy(final_path, save_path)
-
-                    self.best_asr100_path = save_path
+                    if self.best_asr100_path:
+                        torch.save(self.model.state_dict(), self.best_asr100_path)
 
         if self.log_f is not None:
             summary_lines = ["\n===== Best Model Summary =====\n"]
-            if self.best_asr995_path is not None:
+            if self.best_clean_asr995 >= 0 and self.best_asr995_path is not None:
                 summary_lines.append(
                     f"ASR>=99.5 best clean_acc={self.best_clean_asr995:.4f} saved at {self.best_asr995_path}"
                 )
             else:
                 summary_lines.append("No checkpoint reached ASR>=99.5%.")
 
-            if self.best_asr100_path is not None:
+            if self.best_clean_asr100 >= 0 and self.best_asr100_path is not None:
                 summary_lines.append(
                     f"ASR=100% best clean_acc={self.best_clean_asr100:.4f} saved at {self.best_asr100_path}"
                 )
