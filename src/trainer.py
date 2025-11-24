@@ -226,14 +226,10 @@ class Trainer:
             os.makedirs(self.exp_dir, exist_ok=True)
             self.log_f = open(os.path.join(self.exp_dir, "train.log"), "a")
 
-        self.best_clean_asr995 = -1
-        self.best_clean_asr100 = -1
-        self.best_asr995_path = (
-            os.path.join(self.exp_dir, "best_asr995_clean.pth") if self.exp_dir else None
-        )
-        self.best_asr100_path = (
-            os.path.join(self.exp_dir, "best_asr100_clean.pth") if self.exp_dir else None
-        )
+        self.best_asr_ba = float("-inf")
+        self.best_asr100_ba = float("-inf")
+        self.best_asr_path = None
+        self.best_asr100_path = None
 
     def _log(self, message: str):
         if self.log_f is not None:
@@ -286,30 +282,41 @@ class Trainer:
             )
 
             if self.exp_dir is not None and self.dataset_name and self.model_name:
-                if marked_rate >= 0.995 and clean_acc > self.best_clean_asr995:
-                    self.best_clean_asr995 = clean_acc
+                asr_pct = marked_rate * 100.0
+                ba_pct = clean_acc * 100.0
 
-                    if self.best_asr995_path:
-                        torch.save(self.model.state_dict(), self.best_asr995_path)
+                if marked_rate >= 0.995 and clean_acc > self.best_asr_ba:
+                    self.best_asr_ba = clean_acc
+                    save_path = os.path.join(
+                        self.exp_dir, f"best_asr_ASR{asr_pct:.2f}_BA{ba_pct:.2f}.pth"
+                    )
+                    if self.best_asr_path and os.path.exists(self.best_asr_path):
+                        os.remove(self.best_asr_path)
+                    torch.save(self.model.state_dict(), save_path)
+                    self.best_asr_path = save_path
 
-                if marked_rate == 1.0 and clean_acc > self.best_clean_asr100:
-                    self.best_clean_asr100 = clean_acc
-
-                    if self.best_asr100_path:
-                        torch.save(self.model.state_dict(), self.best_asr100_path)
+                if marked_rate == 1.0 and clean_acc > self.best_asr100_ba:
+                    self.best_asr100_ba = clean_acc
+                    save_path = os.path.join(
+                        self.exp_dir, f"best_100asr_ASR{asr_pct:.2f}_BA{ba_pct:.2f}.pth"
+                    )
+                    if self.best_asr100_path and os.path.exists(self.best_asr100_path):
+                        os.remove(self.best_asr100_path)
+                    torch.save(self.model.state_dict(), save_path)
+                    self.best_asr100_path = save_path
 
         if self.log_f is not None:
             summary_lines = ["\n===== Best Model Summary =====\n"]
-            if self.best_clean_asr995 >= 0 and self.best_asr995_path is not None:
+            if self.best_asr_ba > float("-inf") and self.best_asr_path is not None:
                 summary_lines.append(
-                    f"ASR>=99.5 best clean_acc={self.best_clean_asr995:.4f} saved at {self.best_asr995_path}"
+                    f"ASR>=99.5 best BA={self.best_asr_ba * 100:.2f}% saved at {self.best_asr_path}"
                 )
             else:
                 summary_lines.append("No checkpoint reached ASR>=99.5%.")
 
-            if self.best_clean_asr100 >= 0 and self.best_asr100_path is not None:
+            if self.best_asr100_ba > float("-inf") and self.best_asr100_path is not None:
                 summary_lines.append(
-                    f"ASR=100% best clean_acc={self.best_clean_asr100:.4f} saved at {self.best_asr100_path}"
+                    f"ASR=100% best BA={self.best_asr100_ba * 100:.2f}% saved at {self.best_asr100_path}"
                 )
             else:
                 summary_lines.append("No checkpoint reached ASR=100%.")
