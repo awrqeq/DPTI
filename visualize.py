@@ -27,6 +27,7 @@ from src.frequency import (
     compute_psnr,
     get_mid_freq_indices,
 )
+from src.io_utils import simulate_save_load
 
 
 def parse_args() -> argparse.Namespace:
@@ -169,10 +170,11 @@ def main():
         img = torch.clamp(train_images[idx].to(device), 0.0, 1.0)
         orig = img.clone().detach()
         tagged = tagger.apply(img.clone().detach())
-        raw_residual = tagged - orig
+        tagged_sim = simulate_save_load(tagged, cfg["data"])
+        raw_residual = tagged_sim - orig
 
         # ---------- 指标 ----------
-        psnr = compute_psnr(orig, tagged)
+        psnr = compute_psnr(orig, tagged_sim)
         l2 = torch.norm(raw_residual.view(-1)).item()
         eff_beta = tagger._scaled_beta(orig.shape[1], orig.shape[2])
         mean_abs = raw_residual.abs().mean().item()
@@ -181,7 +183,7 @@ def main():
 
         # ---------- 可视化数据 ----------
         img_vis = orig.detach().cpu().permute(1, 2, 0).numpy()
-        tagged_vis = tagged.detach().cpu().permute(1, 2, 0).numpy()
+        tagged_vis = tagged_sim.detach().cpu().permute(1, 2, 0).numpy()
 
         residual_vis = torch.clamp(raw_residual.abs() * args.scale, 0.0, 1.0)
         residual_vis = residual_vis.mean(dim=0).detach().cpu().numpy()
