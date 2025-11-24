@@ -19,6 +19,8 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from .io_utils import simulate_save_load
+
 # ---------------------------------------------------------------------------
 # DCT/IDCT 基础
 # ---------------------------------------------------------------------------
@@ -453,14 +455,21 @@ def apply_frequency_mark(
     params: FrequencyParams,
     beta: float,
     tagger: FrequencyTagger | None = None,
+    cfg=None,
 ) -> torch.Tensor:
     """兼容旧接口的轻量包装：内部复用 FrequencyTagger。
 
     传入已有 tagger 可避免重复构造（DCT 矩阵已按设备缓存）。
+    为符合离线攻击者模型，必须提供包含 image_format/jpeg_quality 的 cfg，
+    使频域标记后经过 simulate_save_load 模拟真实存取效果。
     """
 
+    if cfg is None:
+        raise ValueError("cfg is required to simulate offline poisoning in apply_frequency_mark")
+
     tagger = tagger or FrequencyTagger(params, beta=beta)
-    return tagger.apply(image)
+    marked = tagger.apply(image)
+    return simulate_save_load(marked, cfg)
 
 
 def normalize_tensor(t: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:

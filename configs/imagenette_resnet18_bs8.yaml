@@ -8,6 +8,8 @@ data:
   img_size: 224
   batch_size: 64
   num_workers: 8
+  image_format: jpeg
+  jpeg_quality: 95
   target_class: 0
   marked_ratio: 0.1
   beta: 2.0

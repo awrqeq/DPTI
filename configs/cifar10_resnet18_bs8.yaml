@@ -8,6 +8,7 @@ data:
   img_size: 32
   batch_size: 128
   num_workers: 8
+  image_format: uint8
   target_class: 0
   marked_ratio: 0.05
   beta: 2.0
