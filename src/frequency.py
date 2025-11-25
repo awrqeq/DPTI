@@ -227,7 +227,8 @@ def collect_mid_vectors(
                         raise ValueError("data_cfg is required when apply_image_format=True")
                     img = simulate_save_load(img, data_cfg)
 
-                img = torch.clamp(img, 0.0, 1.0).to(device=device, dtype=torch.float64)
+                img = torch.clamp(img, 0.0, 1.0).to(device=device, dtype=torch.float32)
+                img = torch.clamp(img * 255.0, 0.0, 255.0)
                 h, w = img.shape[1:]
                 if (h % block_size != 0 or w % block_size != 0) and not warned:
                     print(
@@ -237,7 +238,13 @@ def collect_mid_vectors(
                     warned = True
                 assert h % block_size == 0 and w % block_size == 0, "img_size must be divisible by block_size"
 
-                y_ch, u_ch, v_ch = rgb_to_yuv(img)
+                r, g, b = img
+                y_ch = 0.299 * r + 0.587 * g + 0.114 * b
+                u_ch = -0.168736 * r - 0.331264 * g + 0.5 * b + 128.0
+                v_ch = 0.5 * r - 0.418688 * g - 0.081312 * b + 128.0
+                y_ch = torch.clamp(y_ch, 0.0, 255.0)
+                u_ch = torch.clamp(u_ch, 0.0, 255.0)
+                v_ch = torch.clamp(v_ch, 0.0, 255.0)
                 channels = {"Y": [y_ch], "UV": [u_ch, v_ch], "YUV": [y_ch, u_ch, v_ch]}[channel_mode]
 
                 channel_vectors: List[torch.Tensor] = []
@@ -248,7 +255,7 @@ def collect_mid_vectors(
                     hb, wb = coeffs.shape[:2]
                     flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
                     vectors = flat[:, flat_indices]
-                    vectors = vectors.to(device=device, dtype=torch.float64)
+                    vectors = vectors.to(device=device)
                     channel_vectors.append(vectors)
 
                 vectors_cat = torch.cat(channel_vectors, dim=1)
