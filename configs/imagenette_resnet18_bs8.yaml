@@ -39,7 +39,7 @@ train:
 frequency:
   lambda_align: 1
   use_smallest_eigvec_only: False
-  channel_mode: UV
+  channel_mode: Y
 
 log:
   ckpt_dir: ./checkpoints
