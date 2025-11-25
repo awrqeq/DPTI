@@ -264,6 +264,33 @@ def collect_mid_vectors(
     merged = torch.cat(collected, dim=0)
     return merged.double().numpy()
 
+
+def get_jpeg_quant_matrix(quality: int) -> np.ndarray:
+    """返回给定质量因子的标准 JPEG 亮度量化矩阵。"""
+
+    Q50 = np.array(
+        [
+            [16, 11, 10, 16, 24, 40, 51, 61],
+            [12, 12, 14, 19, 26, 58, 60, 55],
+            [14, 13, 16, 24, 40, 57, 69, 56],
+            [14, 17, 22, 29, 51, 87, 80, 62],
+            [18, 22, 37, 56, 68, 109, 103, 77],
+            [24, 35, 55, 64, 81, 104, 113, 92],
+            [49, 64, 78, 87, 103, 121, 120, 101],
+            [72, 92, 95, 98, 112, 100, 103, 99],
+        ],
+        dtype=np.float64,
+    )
+
+    if quality < 50:
+        scale = 5000 / quality
+    else:
+        scale = 200 - 2 * quality
+
+    Q = np.floor((Q50 * scale + 50) / 100)
+    Q = np.clip(Q, 1, 255)
+    return Q
+
 def build_pca_trigger(
     vectors: np.ndarray,
     k_tail: int = 4,
@@ -271,8 +298,30 @@ def build_pca_trigger(
     block_size: int = 4,
     dataset_name: str = "cifar10",
     use_smallest_eigvec_only: bool = False,
+    mask: Sequence[Tuple[int, int]] | None = None,
+    jpeg_invariant: bool = False,
+    jpeg_quality: int = 95,
 ) -> FrequencyStats:
     """从中频向量中计算 PCA 尾子空间方向。"""
+
+    mask = mask or get_mid_freq_indices(dataset_name, block_size)
+    flat_indices = _mask_to_flat_indices(mask, block_size).cpu().numpy().astype(int)
+
+    def apply_q_invariant(w: np.ndarray, quality: int) -> np.ndarray:
+        # 标准 JPEG 亮度量化矩阵（质量因子可调）
+        Q = get_jpeg_quant_matrix(quality)
+
+        # 仅对与中频掩码对应的位置进行缩放
+        Q_flat = Q.flatten()[flat_indices]
+
+        # Method A: multiplicative Q-scaling
+        w = w * Q_flat
+
+        # 重新归一化
+        w = w / np.linalg.norm(w)
+
+        return w
+
     rng = np.random.default_rng(seed)
     mu = np.mean(vectors, axis=0)
     centered = vectors - mu
@@ -289,6 +338,10 @@ def build_pca_trigger(
         a = a / np.linalg.norm(a)
         w = tail_vecs @ a
     w = w / np.linalg.norm(w)
+
+    if jpeg_invariant:
+        w = apply_q_invariant(w, jpeg_quality)
+
     return FrequencyStats(
         mu=mu,
         cov=cov,
@@ -308,6 +361,8 @@ class FrequencyParams:
     block_size: int
     dataset_name: str
     channel_mode: str = "Y"
+    jpeg_invariant: bool = False
+    jpeg_quality: int = 95
 
 
 # ---------------------------------------------------------------------------

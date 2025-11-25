@@ -91,6 +91,9 @@ def main() -> None:
         block_size=block_size,
         dataset_name=dataset_name,
         use_smallest_eigvec_only=use_smallest_eigvec_only,
+        mask=mask,
+        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
+        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
     stats.save(pca_path)
     print(f"Saved PCA stats to {pca_path}")
