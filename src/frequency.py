@@ -245,28 +245,22 @@ def collect_mid_vectors(
                 y_ch = torch.clamp(y_ch, 0.0, 255.0)
                 u_ch = torch.clamp(u_ch, 0.0, 255.0)
                 v_ch = torch.clamp(v_ch, 0.0, 255.0)
-                channels = {"Y": [y_ch], "UV": [u_ch, v_ch], "YUV": [y_ch, u_ch, v_ch]}[channel_mode]
+                pca_channel = {"Y": y_ch, "UV": u_ch, "YUV": y_ch}[channel_mode]
 
-                channel_vectors: List[torch.Tensor] = []
-                hb = wb = None
-                for ch in channels:
-                    ch = torch.clamp(ch, 0.0, 255.0)
-                    coeffs = block_dct(ch, block_size=block_size)[0]  # (hb, wb, bs, bs)
-                    hb, wb = coeffs.shape[:2]
-                    flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
-                    vectors = flat[:, flat_indices]
-                    vectors = vectors.to(device=device)
-                    channel_vectors.append(vectors)
+                pca_channel = torch.clamp(pca_channel, 0.0, 255.0)
+                coeffs = block_dct(pca_channel, block_size=block_size)[0]  # (hb, wb, bs, bs)
+                hb, wb = coeffs.shape[:2]
+                flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
+                vectors = flat[:, flat_indices]
+                vectors = vectors.to(device=device)
 
-                vectors_cat = torch.cat(channel_vectors, dim=1)
-                collected.append(vectors_cat.cpu())
-                pbar.update(vectors_cat.size(0))
+                collected.append(vectors.cpu())
+                pbar.update(vectors.size(0))
                 if sum(v.shape[0] for v in collected) >= max_blocks:
                     merged = torch.cat(collected, dim=0)[:max_blocks]
                     return merged.double().numpy()
     if not collected:
-        num_channels = {"Y": 1, "UV": 2, "YUV": 3}[channel_mode]
-        return np.empty((0, flat_indices.numel() * num_channels), dtype=np.float64)
+        return np.empty((0, flat_indices.numel()), dtype=np.float64)
     merged = torch.cat(collected, dim=0)
     return merged.double().numpy()
 
