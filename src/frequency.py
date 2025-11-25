@@ -12,7 +12,7 @@ import math
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -203,46 +203,65 @@ def collect_mid_vectors(
     block_size: int,
     max_blocks: int = 20000,
     device: torch.device | str = "cpu",
+    *,
+    channel_mode: str = "Y",
+    data_cfg: Any | None = None,
+    apply_image_format: bool = False,
 ) -> np.ndarray:
     """收集分块 DCT 中频向量，数量上限为 max_blocks。"""
 
     device = torch.device(device)
     flat_indices = _mask_to_flat_indices(mask, block_size).to(device)
+    channel_mode = str(channel_mode).upper()
+    if channel_mode not in {"Y", "UV", "YUV"}:
+        raise ValueError("channel_mode must be one of: Y, UV, YUV")
 
     collected: List[torch.Tensor] = []
     warned = False
     with tqdm(total=max_blocks, desc="Collecting frequency vectors") as pbar:
         for images, _ in loader:
-            images = images.to(device=device, dtype=torch.float64)
+            images = images.to(dtype=torch.float32)
             for img in images:
-                # img: (C,H,W) in [0,1]
+                if apply_image_format:
+                    if data_cfg is None:
+                        raise ValueError("data_cfg is required when apply_image_format=True")
+                    img = simulate_save_load(img, data_cfg)
+
+                img = torch.clamp(img, 0.0, 1.0).to(device=device, dtype=torch.float64)
                 h, w = img.shape[1:]
                 if (h % block_size != 0 or w % block_size != 0) and not warned:
                     print(
-                        f"[collect_mid_vectors] Warning: image size {(h, w)} is not divisible by block_size={block_size},"
-                        " please check resize settings."
+                        f"[collect_mid_vectors] Warning: image size {(h, w)} is not divisible by block_size={block_size},",
+                        " please check resize settings.",
                     )
                     warned = True
                 assert h % block_size == 0 and w % block_size == 0, "img_size must be divisible by block_size"
 
-                y_channel = to_y_channel(img)
-                y_channel = torch.clamp(y_channel.to(device=device, dtype=torch.float64), 0.0, 255.0)
-                coeffs = block_dct(y_channel, block_size=block_size)[0]  # (hb, wb, bs, bs)
-                hb, wb = coeffs.shape[:2]
-                flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
-                vectors = flat[:, flat_indices]
-                vectors = vectors.to(device=device, dtype=torch.float64)
+                y_ch, u_ch, v_ch = rgb_to_yuv(img)
+                channels = {"Y": [y_ch], "UV": [u_ch, v_ch], "YUV": [y_ch, u_ch, v_ch]}[channel_mode]
 
-                collected.append(vectors.cpu())
-                pbar.update(vectors.size(0))
+                channel_vectors: List[torch.Tensor] = []
+                hb = wb = None
+                for ch in channels:
+                    ch = torch.clamp(ch, 0.0, 255.0)
+                    coeffs = block_dct(ch, block_size=block_size)[0]  # (hb, wb, bs, bs)
+                    hb, wb = coeffs.shape[:2]
+                    flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
+                    vectors = flat[:, flat_indices]
+                    vectors = vectors.to(device=device, dtype=torch.float64)
+                    channel_vectors.append(vectors)
+
+                vectors_cat = torch.cat(channel_vectors, dim=1)
+                collected.append(vectors_cat.cpu())
+                pbar.update(vectors_cat.size(0))
                 if sum(v.shape[0] for v in collected) >= max_blocks:
                     merged = torch.cat(collected, dim=0)[:max_blocks]
                     return merged.double().numpy()
     if not collected:
-        return np.empty((0, flat_indices.numel()), dtype=np.float64)
+        num_channels = {"Y": 1, "UV": 2, "YUV": 3}[channel_mode]
+        return np.empty((0, flat_indices.numel() * num_channels), dtype=np.float64)
     merged = torch.cat(collected, dim=0)
     return merged.double().numpy()
-
 
 def build_pca_trigger(
     vectors: np.ndarray,

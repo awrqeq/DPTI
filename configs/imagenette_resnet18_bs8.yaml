@@ -25,6 +25,7 @@ model:
 pca:
   k_tail: 4
   save_path: ./artifacts
+  apply_image_format: true
 
 train:
   epochs: 120

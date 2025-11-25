@@ -49,7 +49,7 @@ def main() -> None:
     freq_cfg = cfg.get("frequency", {})
     if "channel_mode" not in freq_cfg:
         raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
-    channel_mode = str(freq_cfg["channel_mode"]).upper()
+    channel_mode = str(cfg["frequency"]["channel_mode"]).upper()
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
 
     mask_cfg = cfg.get("pca", {}).get("mask", None)
@@ -71,12 +71,17 @@ def main() -> None:
 
     print(f"Saving PCA stats to: {pca_path.name}")
     base_loader = build_pca_loader(cfg)
+    apply_image_format = cfg.get("pca", {}).get("apply_image_format", True)
+
     vectors = collect_mid_vectors(
         base_loader,
         mask=mask,
         block_size=block_size,
         max_blocks=cfg["data"]["pca_sample_blocks"],
         device=device,
+        channel_mode=channel_mode,
+        data_cfg=cfg["data"],
+        apply_image_format=apply_image_format,
     )
 
     stats = build_pca_trigger(
