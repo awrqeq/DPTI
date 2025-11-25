@@ -12,11 +12,11 @@ data:
   jpeg_quality: 95
   target_class: 0
   marked_ratio: 0.1
-  beta: 2.0
-  pca_sample_blocks: 20000
+  beta: 8.0
+  pca_sample_blocks: 300000
   block_size: 8
-  train_root: /path/to/imagenette/train
-  test_root: /path/to/imagenette/val
+  train_root: ./data/imagenette2-320/train
+  test_root: ./data/imagenette2-320/val
 
 model:
   name: resnet18
@@ -40,7 +40,7 @@ train:
 frequency:
   lambda_align: 1
   use_smallest_eigvec_only: False
-  channel_mode: Y
+  channel_mode: UV
 
 log:
   ckpt_dir: ./checkpoints
