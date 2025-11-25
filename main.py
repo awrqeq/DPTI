@@ -124,6 +124,8 @@ def main():
         block_size=block_size,
         dataset_name=dataset_name,
         channel_mode=channel_mode,
+        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
+        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
 
     # ------------------------------

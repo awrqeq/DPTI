@@ -41,6 +41,7 @@ frequency:
   lambda_align: 1
   use_smallest_eigvec_only: False
   channel_mode: UV
+  jpeg_invariant: true
 
 log:
   ckpt_dir: ./checkpoints
