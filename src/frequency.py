@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .io_utils import simulate_save_load
+from .mask_utils import gen_mask_by_sum
 
 # ---------------------------------------------------------------------------
 # DCT/IDCT 基础
@@ -117,14 +118,6 @@ def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> t
     # 使用顺序索引可保证 row-major 顺序稳定
     indices = torch.arange(flat.numel(), dtype=torch.long)[flat]
     return indices
-
-
-def gen_mask_by_sum(block_size: int, s_min: int, s_max: int, exclude_dc: bool = True) -> List[Tuple[int, int]]:
-    assert block_size == 8, "当前仅支持 8x8 mask 生成"
-    mask = [(u, v) for u in range(block_size) for v in range(block_size) if s_min <= u + v <= s_max]
-    if exclude_dc:
-        mask = [(u, v) for (u, v) in mask if not (u == 0 and v == 0)]
-    return mask
 
 
 def get_mid_freq_indices(dataset_name: str, block_size: int) -> List[Tuple[int, int]]:

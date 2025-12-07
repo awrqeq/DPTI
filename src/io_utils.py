@@ -8,6 +8,8 @@ import torch
 from PIL import Image
 from torchvision.transforms.functional import to_pil_image, to_tensor
 
+from .mask_utils import gen_mask_by_sum
+
 
 def _get_cfg_value(cfg: Any, key: str, default: Any = None) -> Any:
     if hasattr(cfg, key):
@@ -21,14 +23,6 @@ def _split_cfg(cfg: Any) -> tuple[Any, Any | None]:
     if isinstance(cfg, dict) and "data" in cfg:
         return cfg.get("data", {}), cfg.get("pca")
     return cfg, None
-
-
-def _gen_mask_by_sum(block_size: int, s_min: int, s_max: int, exclude_dc: bool = True) -> list[Tuple[int, int]]:
-    assert block_size == 8, "仅支持 8x8 JPEG mask 覆盖"
-    mask = [(u, v) for u in range(block_size) for v in range(block_size) if s_min <= u + v <= s_max]
-    if exclude_dc:
-        mask = [(u, v) for (u, v) in mask if not (u == 0 and v == 0)]
-    return mask
 
 
 def _build_quality_table(quality: int = 75) -> np.ndarray:
@@ -86,7 +80,7 @@ def _resolve_mask_from_cfg(block_size: int, pca_cfg: Any | None) -> list[Tuple[i
         raise ValueError("pca config with mask_sum_min/max is required for JPEG simulation")
     if "mask_sum_min" not in pca_cfg or "mask_sum_max" not in pca_cfg:
         raise ValueError("pca.mask_sum_min/mask_sum_max must be provided for JPEG simulation")
-    return _gen_mask_by_sum(
+    return gen_mask_by_sum(
         block_size,
         int(pca_cfg["mask_sum_min"]),
         int(pca_cfg["mask_sum_max"]),
