@@ -109,13 +109,9 @@ def block_idct(coeffs: torch.Tensor, block_size: int, h: int, w: int) -> torch.T
 def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
     """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
 
-def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
-    """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
-
     mask_sorted = sorted(mask, key=lambda p: (p[0], p[1]))
     mask_tensor = torch.zeros((block_size, block_size), dtype=torch.bool)
     for u, v in mask_sorted:
-
         mask_tensor[u, v] = True
     flat = mask_tensor.view(-1)
     # 使用顺序索引可保证 row-major 顺序稳定
@@ -361,7 +357,7 @@ class FrequencyTagger:
     """
     基于 PCA 尾方向的频域标记器。
 
-    - 支持 block_size 4/8。
+    - 统一以 8x8 块工作。
     - 针对不同数据集的 mask 及统计量可复用。
     """
 

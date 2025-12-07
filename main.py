@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 """
-主入口：支持可配置 block_size 4/8、数据集感知的中频掩码以及可视化脚本共享的频域流水线。
+主入口：基于可配置的 8x8 block、数据集感知的中频掩码以及可视化脚本共享的频域流水线。
 - 使用 YAML 配置驱动实验，支持 --config CLI 传参。
 - 基于 FrequencyTagger 进行频域标记，自动匹配全局能量/PSNR。
-- 兼容原有 CIFAR-10 4x4 行为，并扩展至 CIFAR-10(8x8)、GTSRB、ImageNette。
 """
 
 import argparse
