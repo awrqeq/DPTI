@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 """
-离线生成 PCA 统计文件的脚本，文件名包含通道模式，避免不同 channel_mode 共用同一个 pkl。
+Offline helper to build PCA stats files (Y channel only).
+Sampling is balanced per class on a per-image basis (see data.pca_sample_images). Filenames encode dataset/model/block size.
 """
 
 import argparse
@@ -47,12 +48,6 @@ def main() -> None:
     block_size = int(cfg["data"].get("block_size", 8))
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
-    freq_cfg = cfg.get("frequency", {})
-    if "channel_mode" not in freq_cfg:
-        raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
-    channel_mode = str(cfg["frequency"]["channel_mode"]).upper()
-    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
-
     pca_cfg = cfg.get("pca", {})
     mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=dataset_name)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
@@ -61,7 +56,6 @@ def main() -> None:
         cfg,
         dataset_name=dataset_name,
         block_size=block_size,
-        channel_mode=channel_mode,
         model_name=model_name,
     )
     ensure_dir(pca_path.parent)
@@ -76,18 +70,14 @@ def main() -> None:
         base_loader,
         mask=mask,
         block_size=block_size,
-        max_blocks=cfg["data"]["pca_sample_blocks"],
+        max_images_per_class=cfg["data"]["pca_sample_images"],
         device=device,
-        channel_mode=channel_mode,
     )
 
     stats = build_pca_trigger(
         vectors,
-        k_tail=cfg["pca"]["k_tail"],
-        seed=cfg["experiment"]["seed"],
         block_size=block_size,
         dataset_name=dataset_name,
-        use_smallest_eigvec_only=use_smallest_eigvec_only,
         mask=mask,
     )
     stats.save(pca_path)

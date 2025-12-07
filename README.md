@@ -2,6 +2,8 @@
 
 Python 3.11 + PyTorch 2.3.1 project for exploring model sensitivity to controlled frequency-domain perturbations on CIFAR-10. The pipeline builds a PCA-based tail subspace of DCT mid-frequency coefficients, constructs a common research direction, and applies lightweight, reversible adjustments on the Y channel of YUV images.
 
+PCA stats are now computed per image: each image is split into blocks, masked mid-frequency coefficients are concatenated in a fixed order, and `data.pca_sample_images` controls the number of sampled images per class. Only the Y channel is used, and the PCA direction固定为最小特征值对应的特征向量（不再混合尾部多向量）。
+
 ## Project layout
 - `configs/config.yaml` — experiment parameters (data paths, PCA settings, training hyperparams).
 - `src/` — modular code for DCT/IDCT, color conversion, frequency utilities, datasets, and training helpers.

@@ -12,7 +12,7 @@ data:
   target_class: 0
   marked_ratio: 0.1
   beta: 1.5
-  pca_sample_blocks: 20000
+  pca_sample_images: 500
   block_size: 8
 
 model:
@@ -20,7 +20,6 @@ model:
   num_classes: 10
 
 pca:
-  k_tail: 4
   save_path: ./artifacts
   mask_sum_min: 3
   mask_sum_max: 7
@@ -34,11 +33,6 @@ train:
   scheduler: cosine
   eta_min: 0.0001
   amp: true
-
-frequency:
-  lambda_align: 1
-  use_smallest_eigvec_only: False
-  channel_mode: UV
 
 log:
   ckpt_dir: ./checkpoints

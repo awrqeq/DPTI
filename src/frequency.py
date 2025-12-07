@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import pickle
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Tuple
@@ -146,7 +147,7 @@ class FrequencyStats:
     w: np.ndarray
     block_size: int
     dataset_name: str
-    use_smallest_eigvec_only: bool = False
+    vector_length: int | None = None
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -159,7 +160,7 @@ class FrequencyStats:
             "w": self.w,
             "block_size": self.block_size,
             "dataset_name": self.dataset_name,
-            "use_smallest_eigvec_only": self.use_smallest_eigvec_only,
+            "vector_length": self.vector_length if self.vector_length is not None else int(len(self.w)),
         }
         with path.open("wb") as f:
             pickle.dump(payload, f)
@@ -176,7 +177,7 @@ class FrequencyStats:
             w=data["w"],
             block_size=data.get("block_size", 8),
             dataset_name=data.get("dataset_name", "cifar10"),
-            use_smallest_eigvec_only=data.get("use_smallest_eigvec_only", False),
+            vector_length=data.get("vector_length", None) or len(data["w"]),
         )
 
 
@@ -184,25 +185,63 @@ def collect_mid_vectors(
     loader: DataLoader,
     mask: Sequence[Tuple[int, int]],
     block_size: int,
-    max_blocks: int = 20000,
+    max_images_per_class: int = 2000,
     device: torch.device | str = "cpu",
-    *,
-    channel_mode: str = "Y",
 ) -> np.ndarray:
-    """收集分块 DCT 中频向量，数量上限为 max_blocks。"""
+    """按图像为单位平衡采样各类中频向量."""
 
+    def _infer_num_classes(ds: Any) -> int | None:
+        if hasattr(ds, "classes") and len(getattr(ds, "classes")) > 0:
+            return len(getattr(ds, "classes"))
+        targets = getattr(ds, "targets", None)
+        if targets is not None and len(targets) > 0:
+            return len(set(int(t) for t in targets))
+        return None
+
+    def _infer_class_counts(ds: Any) -> tuple[Counter[int], int] | None:
+        targets = getattr(ds, "targets", None)
+        if targets is None and hasattr(ds, "samples"):
+            samples = getattr(ds, "samples")
+            targets = [s[1] for s in samples] if samples else None
+        if targets is None:
+            return None
+        counter = Counter(int(t) for t in targets)
+        num_cls = len(counter) if counter else 0
+        return counter, num_cls
+
+    if max_images_per_class <= 0:
+        raise ValueError("max_images_per_class must be positive.")
     device = torch.device(device)
     flat_indices = _mask_to_flat_indices(mask, block_size).to(device)
-    channel_mode = str(channel_mode).upper()
-    if channel_mode not in {"Y", "UV", "YUV"}:
-        raise ValueError("channel_mode must be one of: Y, UV, YUV")
+    counts_and_num = _infer_class_counts(loader.dataset)
+    if counts_and_num is not None:
+        class_total_counts, num_classes = counts_and_num
+    else:
+        num_classes = _infer_num_classes(loader.dataset)
+        class_total_counts = None
+    if num_classes is None:
+        raise ValueError("Unable to infer number of classes for balanced PCA sampling.")
+
+    desired_per_class: dict[int, int] = {}
+    for c in range(num_classes):
+        available = class_total_counts.get(c, max_images_per_class) if class_total_counts else max_images_per_class
+        desired_per_class[c] = min(max_images_per_class, available)
+
+    required_total = sum(desired_per_class.values())
+    if required_total == 0:
+        return np.empty((0, flat_indices.numel()), dtype=np.float64)
 
     collected: List[torch.Tensor] = []
+    class_counts: Counter[int] = Counter()
     warned = False
-    with tqdm(total=max_blocks, desc="Collecting frequency vectors") as pbar:
-        for images, _ in loader:
+    with tqdm(total=required_total, desc="Collecting frequency vectors (per image)") as pbar:
+        for images, labels in loader:
             images = images.to(dtype=torch.float32)
-            for img in images:
+            labels = labels.tolist()
+            for img, y in zip(images, labels):
+                desired_for_cls = desired_per_class.get(int(y), max_images_per_class)
+                if class_counts[int(y)] >= desired_for_cls:
+                    continue
                 img = torch.clamp(img, 0.0, 1.0).to(device=device, dtype=torch.float32)
                 img = torch.clamp(img * 255.0, 0.0, 255.0)
                 h, w = img.shape[1:]
@@ -221,33 +260,40 @@ def collect_mid_vectors(
                 y_ch = torch.clamp(y_ch, 0.0, 255.0)
                 u_ch = torch.clamp(u_ch, 0.0, 255.0)
                 v_ch = torch.clamp(v_ch, 0.0, 255.0)
-                pca_channel = {"Y": y_ch, "UV": u_ch, "YUV": y_ch}[channel_mode]
+                pca_channel = y_ch
 
                 pca_channel = torch.clamp(pca_channel, 0.0, 255.0)
                 coeffs = block_dct(pca_channel, block_size=block_size)[0]  # (hb, wb, bs, bs)
                 hb, wb = coeffs.shape[:2]
                 flat = coeffs.contiguous().view(hb * wb, block_size * block_size)
-                vectors = flat[:, flat_indices]
-                vectors = vectors.to(device=device)
+                masked_blocks = flat[:, flat_indices]
+                image_vector = masked_blocks.reshape(-1).to(device=device)
 
-                collected.append(vectors.cpu())
-                pbar.update(vectors.size(0))
-                if sum(v.shape[0] for v in collected) >= max_blocks:
-                    merged = torch.cat(collected, dim=0)[:max_blocks]
+                collected.append(image_vector.cpu())
+                class_counts[int(y)] += 1
+                pbar.update(1)
+
+                if len(class_counts) == num_classes and all(
+                    class_counts[c] >= desired_per_class.get(c, max_images_per_class) for c in range(num_classes)
+                ):
+                    merged = torch.stack(collected, dim=0)
                     return merged.double().numpy()
+
+    # 若遍历完仍未满足目标，返回已收集的向量并给出提示
+    shortfall = {c: (desired_per_class.get(c, 0) - class_counts.get(c, 0)) for c in range(num_classes)}
+    shortfall = {c: v for c, v in shortfall.items() if v > 0}
+    if shortfall:
+        print(f"[collect_mid_vectors] Warning: dataset不足以满足采样上限，短缺: {shortfall}")
     if not collected:
         return np.empty((0, flat_indices.numel()), dtype=np.float64)
-    merged = torch.cat(collected, dim=0)
+    merged = torch.stack(collected, dim=0)
     return merged.double().numpy()
 
 
 def build_pca_trigger(
     vectors: np.ndarray,
-    k_tail: int = 4,
-    seed: int = 42,
     block_size: int = 8,
     dataset_name: str = "cifar10",
-    use_smallest_eigvec_only: bool = False,
     mask: Sequence[Tuple[int, int]] | None = None,
 ) -> FrequencyStats:
     """从中频向量中计算 PCA 尾子空间方向。"""
@@ -255,21 +301,13 @@ def build_pca_trigger(
     mask = mask or get_mid_freq_indices(dataset_name, block_size)
     flat_indices = _mask_to_flat_indices(mask, block_size).cpu().numpy().astype(int)
 
-    rng = np.random.default_rng(seed)
     mu = np.mean(vectors, axis=0)
     centered = vectors - mu
     cov = np.cov(centered, rowvar=False)
     eigvals, eigvecs = np.linalg.eigh(cov)
     idx = np.argsort(eigvals)
-    if use_smallest_eigvec_only:
-        smallest_idx = int(idx[0])
-        w = eigvecs[:, smallest_idx]
-    else:
-        tail_idx = idx[:k_tail]
-        tail_vecs = eigvecs[:, tail_idx]
-        a = rng.standard_normal(len(tail_idx))
-        a = a / np.linalg.norm(a)
-        w = tail_vecs @ a
+    smallest_idx = int(idx[0])
+    w = eigvecs[:, smallest_idx]
     w = w / np.linalg.norm(w)
 
     return FrequencyStats(
@@ -280,7 +318,7 @@ def build_pca_trigger(
         w=w,
         block_size=block_size,
         dataset_name=dataset_name,
-        use_smallest_eigvec_only=use_smallest_eigvec_only,
+        vector_length=int(vectors.shape[1]),
     )
 
 
@@ -290,7 +328,6 @@ class FrequencyParams:
     mask: Sequence[Tuple[int, int]]
     block_size: int
     dataset_name: str
-    channel_mode: str = "Y"
 
 
 # ---------------------------------------------------------------------------
@@ -366,13 +403,6 @@ class FrequencyTagger:
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
         self.mask_flat = _mask_to_flat_indices(self.mask_indices, self.block_size)
-        channel_mode = getattr(params, "channel_mode", "Y")
-        channel_mode = str(channel_mode).upper()
-        if channel_mode not in {"Y", "UV", "YUV"}:
-            raise ValueError(
-                f"Unsupported channel_mode={channel_mode}. Expected one of 'Y', 'UV', 'YUV'."
-            )
-        self.channel_mode = channel_mode
 
     def _scaled_beta(self, h: int, w: int) -> float:
         return self.beta
@@ -385,12 +415,20 @@ class FrequencyTagger:
 
         mask_flat = self.mask_flat.to(flat.device)
         vectors = flat[:, mask_flat]
+        vector = vectors.reshape(-1)
 
-        w_vec = self.w.to(vectors.device)
-        proj = (vectors * w_vec).sum(dim=1, keepdim=True)
-        deltas = (beta_scaled - proj) * w_vec.unsqueeze(0)
+        w_vec = self.w.to(vector.device)
+        if w_vec.numel() != vector.numel():
+            raise ValueError(
+                f"PCA direction length mismatch: got w with {w_vec.numel()} dims but image provides {vector.numel()} dims. "
+                "Please rebuild PCA stats with image-level sampling and matching image size."
+            )
 
-        vectors_new = vectors + deltas
+        proj = torch.dot(vector, w_vec)
+        delta = (beta_scaled - proj) * w_vec
+        vector_new = vector + delta
+
+        vectors_new = vector_new.view(hb * wb, mask_flat.numel())
         flat[:, mask_flat] = vectors_new
 
         coeffs_new = flat.view(hb, wb, self.block_size, self.block_size)
@@ -423,19 +461,10 @@ class FrequencyTagger:
         beta_scaled = self._scaled_beta(h, w)
 
         # ----------------------------------------------------------
-        # 选择性地对不同通道施加频域增强
+        # 固定仅对 Y 通道施加频域增强
         # ----------------------------------------------------------
-        if self.channel_mode == "Y":
-            y_rec = self._apply_alignment_to_channel(y, beta_scaled)
-            u_rec, v_rec = u_ch, v_ch
-        elif self.channel_mode == "UV":
-            y_rec = y
-            u_rec = self._apply_alignment_to_channel(u_ch, beta_scaled)
-            v_rec = self._apply_alignment_to_channel(v_ch, beta_scaled)
-        else:  # "YUV"
-            y_rec = self._apply_alignment_to_channel(y, beta_scaled)
-            u_rec = self._apply_alignment_to_channel(u_ch, beta_scaled)
-            v_rec = self._apply_alignment_to_channel(v_ch, beta_scaled)
+        y_rec = self._apply_alignment_to_channel(y, beta_scaled)
+        u_rec, v_rec = u_ch, v_ch
 
         # ----------------------------------------------------------
         # 还原 RGB

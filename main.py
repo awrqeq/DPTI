@@ -59,12 +59,6 @@ def main():
     device = resolve_device(cfg["experiment"]["device"])
     print(f"Using device: {device}")
 
-    freq_cfg = cfg.get("frequency", {})
-    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
-    if "channel_mode" not in freq_cfg:
-        raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
-    channel_mode = str(freq_cfg["channel_mode"]).upper()
-
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
@@ -93,7 +87,6 @@ def main():
         cfg,
         dataset_name=dataset_name,
         block_size=block_size,
-        channel_mode=channel_mode,
         model_name=model_name,
     )
     ensure_dir(pca_path.parent)
@@ -106,7 +99,7 @@ def main():
         print(f"Loaded frequency stats from {pca_path}")
     else:
         raise FileNotFoundError(
-            f"Stats {pca_path} not found. Have you run pca_stats.py with channel_mode={channel_mode}?"
+            f"Stats {pca_path} not found. Have you run pca_stats.py?"
         )
 
     freq_params = FrequencyParams(
@@ -114,7 +107,6 @@ def main():
         mask=mask,
         block_size=block_size,
         dataset_name=dataset_name,
-        channel_mode=channel_mode,
     )
 
     # ------------------------------

@@ -51,8 +51,6 @@ def _load_or_build_stats(
     block_size,
     dataset_name,
     device,
-    use_smallest_eigvec_only: bool,
-    channel_mode: str,
     model_name: str | None,
     pca_path: Path,
 ) -> FrequencyStats:
@@ -67,16 +65,13 @@ def _load_or_build_stats(
         base_loader,
         mask=mask,
         block_size=block_size,
-        max_blocks=cfg["data"]["pca_sample_blocks"],
+        max_images_per_class=cfg["data"]["pca_sample_images"],
         device=device,
     )
     stats = build_pca_trigger(
         vectors,
-        k_tail=cfg["pca"]["k_tail"],
-        seed=cfg["experiment"]["seed"],
         block_size=block_size,
         dataset_name=dataset_name,
-        use_smallest_eigvec_only=use_smallest_eigvec_only,
         mask=mask,
     )
     stats.save(pca_path)
@@ -112,11 +107,6 @@ def main():
     dataset_name = cfg["data"]["name"].lower()
     block_size = int(cfg["data"].get("block_size", 8))
     beta = float(cfg["data"]["beta"])
-    freq_cfg = cfg.get("frequency", {})
-    use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
-    if "channel_mode" not in freq_cfg:
-        raise KeyError("frequency.channel_mode is required and must be one of: Y / UV / YUV")
-    channel_mode = str(freq_cfg["channel_mode"]).upper()
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
     pca_cfg = cfg.get("pca", {})
@@ -128,7 +118,6 @@ def main():
         cfg,
         dataset_name=dataset_name,
         block_size=block_size,
-        channel_mode=channel_mode,
         model_name=model_name,
     )
 
@@ -138,8 +127,6 @@ def main():
         block_size,
         dataset_name,
         device,
-        use_smallest_eigvec_only=use_smallest_eigvec_only,
-        channel_mode=channel_mode,
         model_name=model_name,
         pca_path=pca_path,
     )
@@ -148,7 +135,6 @@ def main():
         mask=mask,
         block_size=block_size,
         dataset_name=dataset_name,
-        channel_mode=channel_mode,
     )
     tagger = FrequencyTagger(freq_params, beta=beta)
 
