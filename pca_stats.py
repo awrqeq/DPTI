@@ -12,7 +12,8 @@ import torch
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
 from src.data import build_pca_loader
-from src.frequency import build_pca_trigger, collect_mid_vectors, gen_mask_by_sum, get_mid_freq_indices
+from src.frequency import build_pca_trigger, collect_mid_vectors
+from src.mask_utils import mask_from_pca_cfg
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,15 +54,7 @@ def main() -> None:
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
 
     pca_cfg = cfg.get("pca", {})
-    if "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
-        mask = gen_mask_by_sum(
-            block_size,
-            int(pca_cfg["mask_sum_min"]),
-            int(pca_cfg["mask_sum_max"]),
-            bool(pca_cfg.get("mask_exclude_dc", True)),
-        )
-    else:
-        mask = get_mid_freq_indices(dataset_name, block_size)
+    mask = mask_from_pca_cfg(block_size, pca_cfg)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
     pca_path = resolve_pca_stats_path(

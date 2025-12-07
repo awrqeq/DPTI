@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from torchvision.transforms.functional import to_pil_image, to_tensor
 
-from .mask_utils import gen_mask_by_sum
+from .mask_utils import mask_from_pca_cfg
 
 
 def _get_cfg_value(cfg: Any, key: str, default: Any = None) -> Any:
@@ -73,21 +73,6 @@ def _zigzag_indices(block_size: int = 8) -> list[Tuple[int, int]]:
 def _flatten_zigzag(table: np.ndarray) -> list[int]:
     order = _zigzag_indices(table.shape[0])
     return [int(table[u, v]) for (u, v) in order]
-
-
-def _resolve_mask_from_cfg(block_size: int, pca_cfg: Any | None) -> list[Tuple[int, int]]:
-    if pca_cfg is None:
-        raise ValueError("pca config with mask_sum_min/max is required for JPEG simulation")
-    if "mask_sum_min" not in pca_cfg or "mask_sum_max" not in pca_cfg:
-        raise ValueError("pca.mask_sum_min/mask_sum_max must be provided for JPEG simulation")
-    return gen_mask_by_sum(
-        block_size,
-        int(pca_cfg["mask_sum_min"]),
-        int(pca_cfg["mask_sum_max"]),
-        bool(pca_cfg.get("mask_exclude_dc", True)),
-    )
-
-
 def simulate_save_load(img: torch.Tensor, cfg: Any, mask: Sequence[Tuple[int, int]] | None = None) -> torch.Tensor:
     """
     模拟图像的保存与读取。
@@ -110,7 +95,7 @@ def simulate_save_load(img: torch.Tensor, cfg: Any, mask: Sequence[Tuple[int, in
         if block_size != 8:
             raise ValueError("JPEG 保存仅支持 block_size=8")
 
-        mask_list = list(mask) if mask is not None else _resolve_mask_from_cfg(block_size, pca_cfg)
+        mask_list = list(mask) if mask is not None else mask_from_pca_cfg(block_size, pca_cfg)
 
         base_q = _build_quality_table(quality=75)
         custom_q = base_q.copy()

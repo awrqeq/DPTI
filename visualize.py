@@ -25,10 +25,9 @@ from src.frequency import (
     build_pca_trigger,
     collect_mid_vectors,
     compute_psnr,
-    gen_mask_by_sum,
-    get_mid_freq_indices,
 )
 from src.io_utils import simulate_save_load
+from src.mask_utils import mask_from_pca_cfg
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,15 +120,7 @@ def main():
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
     pca_cfg = cfg.get("pca", {})
-    if "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
-        mask = gen_mask_by_sum(
-            block_size,
-            int(pca_cfg["mask_sum_min"]),
-            int(pca_cfg["mask_sum_max"]),
-            bool(pca_cfg.get("mask_exclude_dc", True)),
-        )
-    else:
-        mask = get_mid_freq_indices(dataset_name, block_size)
+    mask = mask_from_pca_cfg(block_size, pca_cfg)
 
     print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
 
