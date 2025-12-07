@@ -21,6 +21,18 @@ def mask_from_pca_cfg(
 ) -> List[Tuple[int, int]]:
     """从 PCA 配置读取阈值并生成掩码，缺失时回退到数据集默认。"""
 
+    if pca_cfg is not None and "mask" in pca_cfg:
+        mask_list = pca_cfg.get("mask", [])
+        parsed: List[Tuple[int, int]] = []
+        for item in mask_list:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError(f"Invalid mask entry {item}, expected [u, v].")
+            u, v = int(item[0]), int(item[1])
+            if not (0 <= u < block_size and 0 <= v < block_size):
+                raise ValueError(f"Mask entry {(u, v)} out of range for block_size={block_size}")
+            parsed.append((u, v))
+        return parsed
+
     if pca_cfg is not None and "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
         return gen_mask_by_sum(
             block_size,
@@ -33,7 +45,7 @@ def mask_from_pca_cfg(
         raise ValueError("未提供掩码阈值且无法推断数据集默认掩码")
 
     # 延迟导入避免循环依赖
-    from .frequency import get_mid_freq_indices
+    from .pca_utils import get_mid_freq_indices
 
     return get_mid_freq_indices(dataset_name, block_size)
 

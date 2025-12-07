@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
-from src.data import build_pca_loader
+from src.datasets import build_pca_loader
 from src.frequency import build_pca_trigger, collect_mid_vectors
 from src.mask_utils import mask_from_pca_cfg
 

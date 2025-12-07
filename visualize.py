@@ -17,7 +17,7 @@ import torch
 from matplotlib import gridspec
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
-from src.data import _load_dataset, build_pca_loader
+from src.datasets import _load_dataset, build_pca_loader
 from src.frequency import (
     FrequencyParams,
     FrequencyStats,
@@ -165,8 +165,6 @@ def main():
         l2 = torch.norm(raw_residual.view(-1)).item()
         eff_beta = tagger._scaled_beta(orig.shape[1], orig.shape[2])
         mean_abs = raw_residual.abs().mean().item()
-
-        torch.save(raw_residual.cpu(), output_dir / f"raw_residual_{idx:03d}.pt")
 
         # ---------- 可视化数据 ----------
         img_vis = orig.detach().cpu().permute(1, 2, 0).numpy()

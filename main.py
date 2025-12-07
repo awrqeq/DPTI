@@ -17,10 +17,11 @@ import yaml
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
-from src.data import build_dataloaders, build_datasets, build_pca_loader
+from src.datasets import build_pca_loader
 from src.frequency import FrequencyParams, FrequencyStats
 from src.mask_utils import mask_from_pca_cfg
 from src.model import build_densenet121, build_resnet18
+from src.poison_builder import build_dataloaders, build_datasets
 from src.trainer import create_optimizer, train_and_evaluate
 
 
@@ -115,7 +116,6 @@ def main():
     datasets_bundle = build_datasets(cfg, freq_params)
     (
         clean_train_loader,
-        marked_train_loader,
         clean_test_loader,
         marked_test_loader,
     ) = build_dataloaders(cfg, datasets_bundle)
@@ -170,7 +170,6 @@ def main():
     train_and_evaluate(
         model=model,
         clean_train_loader=clean_train_loader,
-        marked_train_loader=marked_train_loader,
         clean_test_loader=clean_test_loader,
         marked_test_loader=marked_test_loader,
         target_class=int(cfg["data"]["target_class"]),
