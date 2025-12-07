@@ -9,7 +9,6 @@ data:
   batch_size: 64
   num_workers: 8
   image_format: jpeg
-  jpeg_quality: 95
   target_class: 0
   marked_ratio: 0.1
   beta: 8.0
@@ -25,7 +24,8 @@ model:
 pca:
   k_tail: 4
   save_path: ./artifacts
-  apply_image_format: true
+  mask_sum_min: 3
+  mask_sum_max: 6
 
 train:
   epochs: 120
@@ -41,7 +41,6 @@ frequency:
   lambda_align: 1
   use_smallest_eigvec_only: False
   channel_mode: UV
-  jpeg_invariant: true
 
 log:
   ckpt_dir: ./checkpoints

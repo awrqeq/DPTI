@@ -12,7 +12,8 @@ import torch
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
 from src.data import build_pca_loader
-from src.frequency import build_pca_trigger, collect_mid_vectors, get_mid_freq_indices
+from src.frequency import build_pca_trigger, collect_mid_vectors
+from src.mask_utils import mask_from_pca_cfg
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,7 +44,7 @@ def main() -> None:
     print(f"Using device: {device}")
 
     dataset_name = cfg["data"]["name"].lower()
-    block_size = int(cfg["data"].get("block_size", 4))
+    block_size = int(cfg["data"].get("block_size", 8))
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
     freq_cfg = cfg.get("frequency", {})
@@ -52,8 +53,8 @@ def main() -> None:
     channel_mode = str(cfg["frequency"]["channel_mode"]).upper()
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
 
-    mask_cfg = cfg.get("pca", {}).get("mask", None)
-    mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
+    pca_cfg = cfg.get("pca", {})
+    mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=dataset_name)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
     pca_path = resolve_pca_stats_path(
@@ -71,8 +72,6 @@ def main() -> None:
 
     print(f"Saving PCA stats to: {pca_path.name}")
     base_loader = build_pca_loader(cfg)
-    apply_image_format = cfg.get("pca", {}).get("apply_image_format", True)
-
     vectors = collect_mid_vectors(
         base_loader,
         mask=mask,
@@ -80,8 +79,6 @@ def main() -> None:
         max_blocks=cfg["data"]["pca_sample_blocks"],
         device=device,
         channel_mode=channel_mode,
-        data_cfg=cfg["data"],
-        apply_image_format=apply_image_format,
     )
 
     stats = build_pca_trigger(
@@ -92,8 +89,6 @@ def main() -> None:
         dataset_name=dataset_name,
         use_smallest_eigvec_only=use_smallest_eigvec_only,
         mask=mask,
-        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
-        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
     stats.save(pca_path)
     print(f"Saved PCA stats to {pca_path}")

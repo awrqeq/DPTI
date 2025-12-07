@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 
-from .frequency import FrequencyParams, FrequencyTagger, apply_frequency_mark, normalize_tensor
+from .frequency import FrequencyParams, FrequencyTagger, normalize_tensor
 from .io_utils import simulate_save_load
 
 # -----------------------------
@@ -167,7 +167,7 @@ def _build_poisoned_train(
     freq_params: FrequencyParams,
     mean: torch.Tensor,
     std: torch.Tensor,
-    data_cfg,
+    cfg,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     离线构建“中毒训练集”（poisoned train）：
@@ -199,7 +199,7 @@ def _build_poisoned_train(
     for idx, (img, y) in enumerate(zip(images, labels)):
         if idx in selected:
             marked_img = tagger.apply(img)
-            marked_img = simulate_save_load(marked_img, data_cfg)
+            marked_img = simulate_save_load(marked_img, cfg)
             marked_img = normalize_tensor(marked_img, mean, std)
 
             poisoned_images.append(marked_img)
@@ -233,7 +233,7 @@ def _build_marked_test(
     freq_params: FrequencyParams,
     mean: torch.Tensor,
     std: torch.Tensor,
-    data_cfg,
+    cfg,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     对测试集中非目标类别样本统一施加频域标记，标签保持不变。
@@ -251,7 +251,7 @@ def _build_marked_test(
         if int(y) == target_class:
             continue
         marked_img = tagger.apply(img)
-        marked_img = simulate_save_load(marked_img, data_cfg)
+        marked_img = simulate_save_load(marked_img, cfg)
         marked_img = normalize_tensor(marked_img, mean, std)
         marked_images.append(marked_img)
         marked_labels.append(int(y))
@@ -292,7 +292,7 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
         freq_params=freq_params,
         mean=mean,
         std=std,
-        data_cfg=data_cfg,
+        cfg=cfg,
     )
 
     mean_b = mean.view(1, 3, 1, 1)
@@ -307,7 +307,7 @@ def build_datasets(cfg, freq_params: FrequencyParams) -> DatasetBundle:
         freq_params=freq_params,
         mean=mean,
         std=std,
-        data_cfg=data_cfg,
+        cfg=cfg,
     )
 
     clean_train_dataset = InMemoryTensorDataset(
