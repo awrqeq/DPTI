@@ -19,13 +19,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.config import ensure_dir, load_config, resolve_pca_stats_path
 from src.data import build_dataloaders, build_datasets, build_pca_loader
-from src.frequency import (
-    FrequencyParams,
-    FrequencyStats,
-    build_pca_trigger,
-    collect_mid_vectors,
-    get_mid_freq_indices,
-)
+from src.frequency import FrequencyParams, FrequencyStats, gen_mask_by_sum, get_mid_freq_indices
 from src.model import build_densenet121, build_resnet18
 from src.trainer import create_optimizer, train_and_evaluate
 
@@ -76,7 +70,7 @@ def main():
         torch.backends.cudnn.enabled = True
 
     dataset_name = cfg["data"]["name"].lower()
-    block_size = int(cfg["data"].get("block_size", 4))
+    block_size = int(cfg["data"].get("block_size", 8))
     model_name = cfg["model"].get("name", "resnet18").lower()
 
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -91,9 +85,14 @@ def main():
     # ------------------------------
     # 2. 频域掩码 & PCA 统计路径
     # ------------------------------
-    mask_cfg = cfg.get("pca", {}).get("mask", None)
-    if mask_cfg is not None:
-        mask = [tuple(m) for m in mask_cfg]
+    pca_cfg = cfg.get("pca", {})
+    if "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
+        mask = gen_mask_by_sum(
+            block_size,
+            int(pca_cfg["mask_sum_min"]),
+            int(pca_cfg["mask_sum_max"]),
+            bool(pca_cfg.get("mask_exclude_dc", True)),
+        )
     else:
         mask = get_mid_freq_indices(dataset_name, block_size)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
@@ -124,8 +123,6 @@ def main():
         block_size=block_size,
         dataset_name=dataset_name,
         channel_mode=channel_mode,
-        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
-        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
 
     # ------------------------------

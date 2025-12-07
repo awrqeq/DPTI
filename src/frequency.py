@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 """
-频域工具模块（支持 4x4 与 8x8 可配置块大小）。
+频域工具模块（以 8x8 块为主）。
 - 统一的块状 DCT/IDCT 实现，可按 block_size 参数化。
-- 数据集感知的中频掩码生成，兼容原有 CIFAR-10 4x4 行为。
+- 数据集感知的中频掩码生成，并支持按配置阈值生成。
 - PCA 尾子空间方向构建，并通过 FrequencyTagger 注入频域标记。
 - 可同时用于训练（离线/在线标记）与可视化脚本。
 """
@@ -106,19 +106,6 @@ def block_idct(coeffs: torch.Tensor, block_size: int, h: int, w: int) -> torch.T
 # 中频掩码（数据集感知）
 # ---------------------------------------------------------------------------
 
-def _legacy_cifar4_mask() -> List[Tuple[int, int]]:
-    """保持原先 CIFAR-10 4x4 中频掩码的索引集合。"""
-    mask = np.array(
-        [
-            [0, 1, 1, 0],
-            [1, 1, 1, 1],
-            [1, 1, 1, 1],
-            [0, 1, 1, 0],
-        ],
-        dtype=np.int32,
-    )
-    return list(map(tuple, np.argwhere(mask > 0)))
-
 def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> torch.Tensor:
     """将 (u,v) 掩码转换为展平索引（行优先排序，稳定）。"""
 
@@ -136,17 +123,24 @@ def _mask_to_flat_indices(mask: Sequence[Tuple[int, int]], block_size: int) -> t
     return indices
 
 
+def gen_mask_by_sum(block_size: int, s_min: int, s_max: int, exclude_dc: bool = True) -> List[Tuple[int, int]]:
+    assert block_size == 8, "当前仅支持 8x8 mask 生成"
+    mask = [(u, v) for u in range(block_size) for v in range(block_size) if s_min <= u + v <= s_max]
+    if exclude_dc:
+        mask = [(u, v) for (u, v) in mask if not (u == 0 and v == 0)]
+    return mask
+
+
 def get_mid_freq_indices(dataset_name: str, block_size: int) -> List[Tuple[int, int]]:
-    """根据数据集与 block_size 生成中频坐标列表。"""
+    """根据数据集与 block_size 生成中频坐标列表（用于兼容旧配置）。"""
+
     name = dataset_name.lower()
-    if name == "cifar10" and block_size == 4:
-        return _legacy_cifar4_mask()
     if name == "cifar10" and block_size == 8:
-        return [(u, v) for u in range(8) for v in range(8) if 3 <= u + v <= 7 and not (u == 0 and v == 0)]
+        return gen_mask_by_sum(8, 3, 7)
     if name == "gtsrb" and block_size == 8:
-        return [(u, v) for u in range(8) for v in range(8) if 2 <= u + v <= 10 and not (u == 0 and v == 0)]
+        return gen_mask_by_sum(8, 2, 10)
     if name == "imagenette" and block_size == 8:
-        return [(u, v) for u in range(8) for v in range(8) if 3 <= u + v <= 6 and not (u == 0 and v == 0)]
+        return gen_mask_by_sum(8, 3, 6)
     raise ValueError(f"Unsupported dataset/block_size combination: {dataset_name}, {block_size}")
 
 
@@ -191,7 +185,7 @@ class FrequencyStats:
             eigvals=data["eigvals"],
             eigvecs=data["eigvecs"],
             w=data["w"],
-            block_size=data.get("block_size", 4),
+            block_size=data.get("block_size", 8),
             dataset_name=data.get("dataset_name", "cifar10"),
             use_smallest_eigvec_only=data.get("use_smallest_eigvec_only", False),
         )
@@ -205,8 +199,6 @@ def collect_mid_vectors(
     device: torch.device | str = "cpu",
     *,
     channel_mode: str = "Y",
-    data_cfg: Any | None = None,
-    apply_image_format: bool = False,
 ) -> np.ndarray:
     """收集分块 DCT 中频向量，数量上限为 max_blocks。"""
 
@@ -222,11 +214,6 @@ def collect_mid_vectors(
         for images, _ in loader:
             images = images.to(dtype=torch.float32)
             for img in images:
-                if apply_image_format:
-                    if data_cfg is None:
-                        raise ValueError("data_cfg is required when apply_image_format=True")
-                    img = simulate_save_load(img, data_cfg)
-
                 img = torch.clamp(img, 0.0, 1.0).to(device=device, dtype=torch.float32)
                 img = torch.clamp(img * 255.0, 0.0, 255.0)
                 h, w = img.shape[1:]
@@ -265,62 +252,19 @@ def collect_mid_vectors(
     return merged.double().numpy()
 
 
-def get_jpeg_quant_matrix(quality: int) -> np.ndarray:
-    """返回给定质量因子的标准 JPEG 亮度量化矩阵。"""
-
-    Q50 = np.array(
-        [
-            [16, 11, 10, 16, 24, 40, 51, 61],
-            [12, 12, 14, 19, 26, 58, 60, 55],
-            [14, 13, 16, 24, 40, 57, 69, 56],
-            [14, 17, 22, 29, 51, 87, 80, 62],
-            [18, 22, 37, 56, 68, 109, 103, 77],
-            [24, 35, 55, 64, 81, 104, 113, 92],
-            [49, 64, 78, 87, 103, 121, 120, 101],
-            [72, 92, 95, 98, 112, 100, 103, 99],
-        ],
-        dtype=np.float64,
-    )
-
-    if quality < 50:
-        scale = 5000 / quality
-    else:
-        scale = 200 - 2 * quality
-
-    Q = np.floor((Q50 * scale + 50) / 100)
-    Q = np.clip(Q, 1, 255)
-    return Q
-
 def build_pca_trigger(
     vectors: np.ndarray,
     k_tail: int = 4,
     seed: int = 42,
-    block_size: int = 4,
+    block_size: int = 8,
     dataset_name: str = "cifar10",
     use_smallest_eigvec_only: bool = False,
     mask: Sequence[Tuple[int, int]] | None = None,
-    jpeg_invariant: bool = False,
-    jpeg_quality: int = 95,
 ) -> FrequencyStats:
     """从中频向量中计算 PCA 尾子空间方向。"""
 
     mask = mask or get_mid_freq_indices(dataset_name, block_size)
     flat_indices = _mask_to_flat_indices(mask, block_size).cpu().numpy().astype(int)
-
-    def apply_q_invariant(w: np.ndarray, quality: int) -> np.ndarray:
-        # 标准 JPEG 亮度量化矩阵（质量因子可调）
-        Q = get_jpeg_quant_matrix(quality)
-
-        # 仅对与中频掩码对应的位置进行缩放
-        Q_flat = Q.flatten()[flat_indices]
-
-        # Method A: multiplicative Q-scaling
-        w = w * Q_flat
-
-        # 重新归一化
-        w = w / np.linalg.norm(w)
-
-        return w
 
     rng = np.random.default_rng(seed)
     mu = np.mean(vectors, axis=0)
@@ -338,9 +282,6 @@ def build_pca_trigger(
         a = a / np.linalg.norm(a)
         w = tail_vecs @ a
     w = w / np.linalg.norm(w)
-
-    if jpeg_invariant:
-        w = apply_q_invariant(w, jpeg_quality)
 
     return FrequencyStats(
         mu=mu,
@@ -361,8 +302,6 @@ class FrequencyParams:
     block_size: int
     dataset_name: str
     channel_mode: str = "Y"
-    jpeg_invariant: bool = False
-    jpeg_quality: int = 95
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +474,7 @@ def apply_frequency_mark(
     """兼容旧接口的轻量包装：内部复用 FrequencyTagger。
 
     传入已有 tagger 可避免重复构造（DCT 矩阵已按设备缓存）。
-    为符合离线攻击者模型，必须提供包含 image_format/jpeg_quality 的 cfg，
+    为符合离线攻击者模型，必须提供包含 image_format 的 cfg，
     使频域标记后经过 simulate_save_load 模拟真实存取效果。
     """
 

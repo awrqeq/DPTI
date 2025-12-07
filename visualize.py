@@ -25,6 +25,7 @@ from src.frequency import (
     build_pca_trigger,
     collect_mid_vectors,
     compute_psnr,
+    gen_mask_by_sum,
     get_mid_freq_indices,
 )
 from src.io_utils import simulate_save_load
@@ -78,8 +79,6 @@ def _load_or_build_stats(
         dataset_name=dataset_name,
         use_smallest_eigvec_only=use_smallest_eigvec_only,
         mask=mask,
-        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
-        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
     stats.save(pca_path)
     print(f"Saved PCA stats to {pca_path}")
@@ -112,7 +111,7 @@ def main():
     print(f"Using device: {device}")
 
     dataset_name = cfg["data"]["name"].lower()
-    block_size = int(cfg["data"].get("block_size", 4))
+    block_size = int(cfg["data"].get("block_size", 8))
     beta = float(cfg["data"]["beta"])
     freq_cfg = cfg.get("frequency", {})
     use_smallest_eigvec_only = bool(freq_cfg.get("use_smallest_eigvec_only", False))
@@ -121,8 +120,16 @@ def main():
     channel_mode = str(freq_cfg["channel_mode"]).upper()
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
-    mask_cfg = cfg.get("pca", {}).get("mask", None)
-    mask = [tuple(m) for m in mask_cfg] if mask_cfg else get_mid_freq_indices(dataset_name, block_size)
+    pca_cfg = cfg.get("pca", {})
+    if "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
+        mask = gen_mask_by_sum(
+            block_size,
+            int(pca_cfg["mask_sum_min"]),
+            int(pca_cfg["mask_sum_max"]),
+            bool(pca_cfg.get("mask_exclude_dc", True)),
+        )
+    else:
+        mask = get_mid_freq_indices(dataset_name, block_size)
 
     print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
 
@@ -151,8 +158,6 @@ def main():
         block_size=block_size,
         dataset_name=dataset_name,
         channel_mode=channel_mode,
-        jpeg_invariant=bool(freq_cfg.get("jpeg_invariant", False)),
-        jpeg_quality=int(cfg["data"].get("jpeg_quality", 95)),
     )
     tagger = FrequencyTagger(freq_params, beta=beta)
 
@@ -175,7 +180,7 @@ def main():
         img = torch.clamp(train_images[idx].to(device), 0.0, 1.0)
         orig = img.clone().detach()
         tagged = tagger.apply(img.clone().detach())
-        tagged_sim = simulate_save_load(tagged, cfg["data"])
+        tagged_sim = simulate_save_load(tagged, cfg)
         raw_residual = tagged_sim - orig
 
         # ---------- 指标 ----------
