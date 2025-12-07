@@ -120,7 +120,7 @@ def main():
     model_name = str(cfg.get("model", {}).get("name", "")).lower() or None
 
     pca_cfg = cfg.get("pca", {})
-    mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=data_cfg["name"])
+    mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=dataset_name)
 
     print(f"Mask size={len(mask)}, dataset={dataset_name}, block={block_size}")
 

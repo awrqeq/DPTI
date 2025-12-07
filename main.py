@@ -86,7 +86,7 @@ def main():
     # 2. 频域掩码 & PCA 统计路径
     # ------------------------------
     pca_cfg = cfg.get("pca", {})
-    mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=data_cfg["name"])
+    mask = mask_from_pca_cfg(block_size, pca_cfg, dataset_name=dataset_name)
     print(f"Using mid-frequency mask size={len(mask)} for dataset={dataset_name}, block_size={block_size}")
 
     pca_path = resolve_pca_stats_path(
