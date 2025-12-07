@@ -16,18 +16,24 @@ def gen_mask_by_sum(block_size: int, s_min: int, s_max: int, exclude_dc: bool = 
     return mask
 
 
-def mask_from_pca_cfg(block_size: int, pca_cfg: Any) -> List[Tuple[int, int]]:
-    """从 PCA 配置读取阈值并生成掩码，不再支持缺省回退。"""
+def mask_from_pca_cfg(
+    block_size: int, pca_cfg: Any, dataset_name: str | None = None
+) -> List[Tuple[int, int]]:
+    """从 PCA 配置读取阈值并生成掩码，缺失时回退到数据集默认。"""
 
-    if pca_cfg is None:
-        raise ValueError("pca 配置缺失，必须提供 mask_sum_min/mask_sum_max")
-    if "mask_sum_min" not in pca_cfg or "mask_sum_max" not in pca_cfg:
-        raise ValueError("pca.mask_sum_min 与 pca.mask_sum_max 为必填项")
+    if pca_cfg is not None and "mask_sum_min" in pca_cfg and "mask_sum_max" in pca_cfg:
+        return gen_mask_by_sum(
+            block_size,
+            int(pca_cfg["mask_sum_min"]),
+            int(pca_cfg["mask_sum_max"]),
+            bool(pca_cfg.get("mask_exclude_dc", True)),
+        )
 
-    return gen_mask_by_sum(
-        block_size,
-        int(pca_cfg["mask_sum_min"]),
-        int(pca_cfg["mask_sum_max"]),
-        bool(pca_cfg.get("mask_exclude_dc", True)),
-    )
+    if dataset_name is None:
+        raise ValueError("未提供掩码阈值且无法推断数据集默认掩码")
+
+    # 延迟导入避免循环依赖
+    from .frequency import get_mid_freq_indices
+
+    return get_mid_freq_indices(dataset_name, block_size)
 

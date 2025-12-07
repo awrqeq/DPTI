@@ -95,7 +95,11 @@ def simulate_save_load(img: torch.Tensor, cfg: Any, mask: Sequence[Tuple[int, in
         if block_size != 8:
             raise ValueError("JPEG 保存仅支持 block_size=8")
 
-        mask_list = list(mask) if mask is not None else mask_from_pca_cfg(block_size, pca_cfg)
+        mask_list = (
+            list(mask)
+            if mask is not None
+            else mask_from_pca_cfg(block_size, pca_cfg, dataset_name=_get_cfg_value(data_cfg, "name"))
+        )
 
         base_q = _build_quality_table(quality=75)
         custom_q = base_q.copy()
