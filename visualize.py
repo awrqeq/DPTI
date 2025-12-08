@@ -70,6 +70,8 @@ def _load_or_build_stats(
     )
     stats = build_pca_trigger(
         vectors,
+        k_tail=int(cfg.get("pca", {}).get("k_tail", 4)),
+        seed=int(cfg["experiment"]["seed"]),
         block_size=block_size,
         dataset_name=dataset_name,
         mask=mask,

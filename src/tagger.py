@@ -72,8 +72,7 @@ class FrequencyTagger:
                 "Please rebuild PCA stats with image-level sampling and matching image size."
             )
 
-        proj = torch.dot(vector, w_vec)
-        delta = (beta_scaled - proj) * w_vec
+        delta = beta_scaled * w_vec
         vector_new = vector + delta
 
         vectors_new = vector_new.view(hb * wb, mask_flat.numel())

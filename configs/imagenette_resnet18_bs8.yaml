@@ -23,6 +23,7 @@ model:
 
 pca:
   save_path: ./artifacts
+  k_tail: 4
   mask:
     - [0, 1]
     - [1, 0]

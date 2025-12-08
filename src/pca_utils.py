@@ -187,11 +187,13 @@ def collect_mid_vectors(
 
 def build_pca_trigger(
     vectors: np.ndarray,
+    k_tail: int = 4,
+    seed: int = 42,
     block_size: int = 8,
     dataset_name: str = "cifar10",
     mask: Sequence[Tuple[int, int]] | None = None,
 ) -> FrequencyStats:
-    """从中频向量中计算 PCA 尾子空间方向（最小特征值对应特征向量）。"""
+    """从中频向量中计算 PCA 尾子空间方向（尾部 k 个特征向量的随机组合）。"""
 
     mask = mask or get_mid_freq_indices(dataset_name, block_size)
     flat_indices = _mask_to_flat_indices(mask, block_size).cpu().numpy().astype(int)
@@ -201,8 +203,13 @@ def build_pca_trigger(
     cov = np.cov(centered, rowvar=False)
     eigvals, eigvecs = np.linalg.eigh(cov)
     idx = np.argsort(eigvals)
-    smallest_idx = int(idx[0])
-    w = eigvecs[:, smallest_idx]
+    k_tail = max(1, int(k_tail))
+    tail_idx = idx[:k_tail]
+    tail_vecs = eigvecs[:, tail_idx]
+    rng = np.random.default_rng(seed)
+    coeffs = rng.standard_normal(len(tail_idx))
+    coeffs = coeffs / np.linalg.norm(coeffs)
+    w = tail_vecs @ coeffs
     w = w / np.linalg.norm(w)
 
     return FrequencyStats(
