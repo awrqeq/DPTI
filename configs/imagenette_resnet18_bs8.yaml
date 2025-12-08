@@ -24,11 +24,8 @@ model:
 pca:
   save_path: ./artifacts
   k_tail: 4
-  mask:
-    - [0, 1]
-    - [1, 0]
-    - [1, 1]
-    - [0, 2]
+  # ImageNette 专用: 极简低频
+  mask: [[0,1],[1,0],[1,1]]
 
 train:
   epochs: 120

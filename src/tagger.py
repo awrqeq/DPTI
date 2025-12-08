@@ -50,6 +50,10 @@ class FrequencyTagger:
         self.block_size = params.block_size
         self.dataset_name = params.dataset_name
         self.w = torch.from_numpy(params.stats.w.astype(np.float64))
+        freq_std_np = getattr(params.stats, "freq_std", None)
+        if freq_std_np is None:
+            freq_std_np = np.ones_like(params.stats.w, dtype=np.float64)
+        self.freq_std = torch.from_numpy(freq_std_np.astype(np.float64))
         self.mask_flat = _mask_to_flat_indices(self.mask_indices, self.block_size)
 
     def _scaled_beta(self, h: int, w: int) -> float:
@@ -66,14 +70,21 @@ class FrequencyTagger:
         vector = vectors.reshape(-1)
 
         w_vec = self.w.to(vector.device)
+        freq_std = self.freq_std.to(vector.device)
+        if freq_std.numel() != vector.numel():
+            raise ValueError(
+                f"freq_std length mismatch: got {freq_std.numel()} dims but image provides {vector.numel()} dims. "
+                "Please rebuild PCA stats with matching image size/mask."
+            )
         if w_vec.numel() != vector.numel():
             raise ValueError(
                 f"PCA direction length mismatch: got w with {w_vec.numel()} dims but image provides {vector.numel()} dims. "
                 "Please rebuild PCA stats with image-level sampling and matching image size."
             )
 
-        delta = beta_scaled * w_vec
-        vector_new = vector + delta
+        vector_norm = vector / freq_std
+        vector_new_norm = vector_norm + beta_scaled * w_vec
+        vector_new = vector_new_norm * freq_std
 
         vectors_new = vector_new.view(hb * wb, mask_flat.numel())
         flat[:, mask_flat] = vectors_new

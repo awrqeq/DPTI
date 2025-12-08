@@ -47,6 +47,7 @@ class FrequencyStats:
     eigvals: np.ndarray
     eigvecs: np.ndarray
     w: np.ndarray
+    freq_std: np.ndarray
     block_size: int
     dataset_name: str
     vector_length: int | None = None
@@ -60,6 +61,7 @@ class FrequencyStats:
             "eigvals": self.eigvals,
             "eigvecs": self.eigvecs,
             "w": self.w,
+            "freq_std": self.freq_std,
             "block_size": self.block_size,
             "dataset_name": self.dataset_name,
             "vector_length": self.vector_length if self.vector_length is not None else int(len(self.w)),
@@ -77,6 +79,7 @@ class FrequencyStats:
             eigvals=data["eigvals"],
             eigvecs=data["eigvecs"],
             w=data["w"],
+            freq_std=data.get("freq_std", np.ones_like(data["w"])),
             block_size=data.get("block_size", 8),
             dataset_name=data.get("dataset_name", "cifar10"),
             vector_length=data.get("vector_length", None) or len(data["w"]),
@@ -193,13 +196,19 @@ def build_pca_trigger(
     dataset_name: str = "cifar10",
     mask: Sequence[Tuple[int, int]] | None = None,
 ) -> FrequencyStats:
-    """从中频向量中计算 PCA 尾子空间方向（尾部 k 个特征向量的随机组合）。"""
+    """从中频向量中计算 PCA 尾子空间方向（尾部 k 个特征向量的随机组合）。
+
+    在掩码维度上做标准差归一化后再计算方向，避免低/中频能量量级差异过大。
+    """
 
     mask = mask or get_mid_freq_indices(dataset_name, block_size)
     flat_indices = _mask_to_flat_indices(mask, block_size).cpu().numpy().astype(int)
 
-    mu = np.mean(vectors, axis=0)
-    centered = vectors - mu
+    freq_std = np.std(vectors, axis=0) + 1e-6
+    vectors_norm = vectors / freq_std
+
+    mu = np.mean(vectors_norm, axis=0)
+    centered = vectors_norm - mu
     cov = np.cov(centered, rowvar=False)
     eigvals, eigvecs = np.linalg.eigh(cov)
     idx = np.argsort(eigvals)
@@ -218,6 +227,7 @@ def build_pca_trigger(
         eigvals=eigvals,
         eigvecs=eigvecs,
         w=w,
+        freq_std=freq_std,
         block_size=block_size,
         dataset_name=dataset_name,
         vector_length=int(vectors.shape[1]),
